@@ -15,10 +15,19 @@ export default function AuthCallback() {
     await updateCurrentUser();
   }, [updateCurrentUser]);
 
-  const navigateHome = useCallback(
-    () => navigate("/", { replace: true }),
-    [navigate],
-  );
+  const navigateHome = useCallback(() => {
+    let inviteToken: string | null = null;
+    try {
+      inviteToken = sessionStorage.getItem("astrid-pending-workspace-invite");
+    } catch {
+      // Continue to the app if browser storage is unavailable.
+    }
+    if (inviteToken) {
+      navigate(`/accept-invite?token=${encodeURIComponent(inviteToken)}`, { replace: true });
+      return;
+    }
+    navigate("/", { replace: true });
+  }, [navigate]);
 
   const { status, error, retry } = useAuthCallback({
     isBackendAuthenticated: isConvexAuthenticated,

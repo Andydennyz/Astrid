@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { usePaginatedQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import type { Id } from "@/convex/_generated/dataModel.d.ts";
 import { MoreHorizontal, ChevronRight, Smartphone, Banknote, CreditCard, Building2, Globe } from "lucide-react";
 import { Badge } from "@/components/ui/badge.tsx";
@@ -54,6 +55,7 @@ type Props = {
 };
 
 export default function TransactionTable({ statusFilter, methodFilter, typeFilter, search }: Props) {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [debouncedSearch] = useDebounce(search, 300);
 
   const updateStatus = useMutation(api.transactions.updateStatus);
@@ -61,18 +63,22 @@ export default function TransactionTable({ statusFilter, methodFilter, typeFilte
 
   const { results, status, loadMore } = usePaginatedQuery(
     api.transactions.list,
-    {
-      status: statusFilter as "completed" | "pending" | "failed" | "all",
-      method: methodFilter as "mpesa" | "cash" | "bank" | "card" | "paypal" | "all",
-      type: typeFilter as "payment" | "refund" | "credit" | "debit" | "all",
-      search: debouncedSearch || undefined,
-    },
+    workspaceId
+      ? {
+          workspaceId,
+          status: statusFilter as "completed" | "pending" | "failed" | "all",
+          method: methodFilter as "mpesa" | "cash" | "bank" | "card" | "paypal" | "all",
+          type: typeFilter as "payment" | "refund" | "credit" | "debit" | "all",
+          search: debouncedSearch || undefined,
+        }
+      : "skip",
     { initialNumItems: 25 },
   );
 
   const handleDelete = async (id: Id<"transactions">) => {
+    if (!workspaceId) return;
     try {
-      await removeTx({ id });
+      await removeTx({ workspaceId, id });
       toast.success("Transaction deleted");
     } catch {
       toast.error("Failed to delete");
@@ -83,8 +89,9 @@ export default function TransactionTable({ statusFilter, methodFilter, typeFilte
     id: Id<"transactions">,
     s: "completed" | "pending" | "failed",
   ) => {
+    if (!workspaceId) return;
     try {
-      await updateStatus({ id, status: s });
+      await updateStatus({ workspaceId, id, status: s });
       toast.success(`Marked as ${s}`);
     } catch {
       toast.error("Failed to update");

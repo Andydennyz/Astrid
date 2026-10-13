@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import {
   Dialog,
   DialogContent,
@@ -21,6 +22,7 @@ type Props = {
 };
 
 export default function BulkGenerateDialog({ open, onClose }: Props) {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const today = new Date();
   const defaultDue = new Date(today.getFullYear(), today.getMonth() + 1, 0); // last day of month
   const [dueDate, setDueDate] = useState(defaultDue.toISOString().split("T")[0]);
@@ -31,15 +33,33 @@ export default function BulkGenerateDialog({ open, onClose }: Props) {
 
   const handleGenerate = async () => {
     if (!dueDate) return toast.error("Select a due date");
+    if (!workspaceId) return;
     setGenerating(true);
     try {
-      const result = await generate({
-        dueDate: new Date(dueDate).toISOString(),
-        description: description.trim() || undefined,
-      });
+      let cursor: string | null = null;
+      let created = 0;
+      let skipped = 0;
+      let isDone = false;
+      while (!isDone) {
+        const result: {
+          created: number;
+          skipped: number;
+          isDone: boolean;
+          continueCursor: string;
+        } = await generate({
+          workspaceId,
+          dueDate: new Date(dueDate).toISOString(),
+          description: description.trim() || undefined,
+          paginationOpts: { numItems: 100, cursor },
+        });
+        created += result.created;
+        skipped += result.skipped;
+        cursor = result.continueCursor;
+        isDone = result.isDone;
+      }
       toast.success(
-        `Generated ${result.created} invoice${result.created !== 1 ? "s" : ""}` +
-          (result.skipped > 0 ? ` (${result.skipped} skipped – already exist or no fee)` : ""),
+        `Generated ${created} invoice${created !== 1 ? "s" : ""}` +
+          (skipped > 0 ? ` (${skipped} skipped – already exist or no fee)` : ""),
       );
       onClose();
     } catch {

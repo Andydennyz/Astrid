@@ -1,8 +1,10 @@
-import { ConvexError } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { mutation, query } from "./_generated/server";
+import schema from "./schema";
 
 export const updateCurrentUser = mutation({
   args: {},
+  returns: v.id("users"),
   handler: async (ctx) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
@@ -33,6 +35,7 @@ export const updateCurrentUser = mutation({
 
 export const getCurrentUser = query({
   args: {},
+  returns: v.union(schema.doc("users"), v.null()),
   handler: async (ctx) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {

@@ -1,82 +1,99 @@
-import { query, mutation } from "./_generated/server";
 import { v } from "convex/values";
+import { mutation, query } from "./_generated/server";
+import { requireWorkspaceRole } from "./model/workspace";
 
-// ─── Get onboarding state for the current user ────────────────────────────────
+const profileValidator = v.object({
+  _id: v.id("users"),
+  _creationTime: v.number(),
+  tokenIdentifier: v.string(),
+  name: v.optional(v.string()),
+  email: v.optional(v.string()),
+  role: v.optional(v.union(v.literal("admin"), v.literal("staff"), v.literal("operator"))),
+  avatar: v.optional(v.string()),
+  companyName: v.optional(v.string()),
+});
+
+const stepsValidator = v.object({
+  profile: v.boolean(),
+  packages: v.boolean(),
+  network: v.boolean(),
+  subscribers: v.boolean(),
+});
+
 export const getProgress = query({
-  args: {},
-  handler: async (ctx) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) return null;
-
-    const user = await ctx.db
-      .query("users")
-      .withIndex("by_token", (q) => q.eq("tokenIdentifier", identity.tokenIdentifier))
-      .unique();
-
-    if (!user) return null;
-
-    // Check what's set up
-    const packageCount = await ctx.db.query("packages").take(1);
-    const subscriberCount = await ctx.db.query("subscribers").take(1);
-    const deviceCount = await ctx.db.query("network_devices").take(1);
-
+  args: { workspaceId: v.id("workspaces") },
+  returns: v.object({
+    steps: stepsValidator,
+    completedCount: v.number(),
+    totalSteps: v.number(),
+    isComplete: v.boolean(),
+    user: profileValidator,
+  }),
+  handler: async (ctx, args) => {
+    const { user } = await requireWorkspaceRole(ctx, args.workspaceId, [
+      "owner",
+      "admin",
+      "billing",
+      "network",
+      "read_only",
+    ]);
+    const [packages, subscribers, devices] = await Promise.all([
+      ctx.db
+        .query("packages")
+        .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
+        .take(1),
+      ctx.db
+        .query("subscribers")
+        .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
+        .take(1),
+      ctx.db
+        .query("network_devices")
+        .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
+        .take(1),
+    ]);
     const steps = {
-      profile: !!(user.name && user.companyName),
-      packages: packageCount.length > 0,
-      network: deviceCount.length > 0,
-      subscribers: subscriberCount.length > 0,
+      profile: Boolean(user.name && user.companyName),
+      packages: packages.length > 0,
+      network: devices.length > 0,
+      subscribers: subscribers.length > 0,
     };
-
     const completedCount = Object.values(steps).filter(Boolean).length;
     const totalSteps = Object.keys(steps).length;
 
-    return {
-      steps,
-      completedCount,
-      totalSteps,
-      isComplete: completedCount === totalSteps,
-      user,
-    };
+    return { steps, completedCount, totalSteps, isComplete: completedCount === totalSteps, user };
   },
 });
 
-// ─── Complete setup profile step ─────────────────────────────────────────────
 export const completeProfileStep = mutation({
   args: {
+    workspaceId: v.id("workspaces"),
     name: v.string(),
     companyName: v.string(),
     email: v.optional(v.string()),
   },
+  returns: v.null(),
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) throw new Error("Unauthenticated");
-
-    const user = await ctx.db
-      .query("users")
-      .withIndex("by_token", (q) => q.eq("tokenIdentifier", identity.tokenIdentifier))
-      .unique();
-
-    if (!user) throw new Error("User not found");
-
+    const { identity, user } = await requireWorkspaceRole(ctx, args.workspaceId, ["owner", "admin"]);
     await ctx.db.patch(user._id, {
       name: args.name,
       companyName: args.companyName,
-      ...(args.email ? { email: args.email } : {}),
+      ...(args.email !== undefined ? { email: args.email } : {}),
     });
-
     await ctx.db.insert("audit_logs", {
+      workspaceId: args.workspaceId,
       userId: identity.tokenIdentifier,
       action: "onboarding",
       resource: "user_profile",
       details: `Completed profile setup: ${args.companyName}`,
       createdAt: new Date().toISOString(),
     });
+    return null;
   },
 });
 
-// ─── Create starter package during onboarding ─────────────────────────────────
 export const createStarterPackage = mutation({
   args: {
+    workspaceId: v.id("workspaces"),
     name: v.string(),
     speed: v.string(),
     price: v.number(),
@@ -85,17 +102,22 @@ export const createStarterPackage = mutation({
     uploadSpeed: v.number(),
     description: v.optional(v.string()),
   },
+  returns: v.id("packages"),
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) throw new Error("Unauthenticated");
-
+    const { identity } = await requireWorkspaceRole(ctx, args.workspaceId, [
+      "owner",
+      "admin",
+      "billing",
+    ]);
+    const { workspaceId, ...packageFields } = args;
     const id = await ctx.db.insert("packages", {
-      ...args,
+      ...packageFields,
+      workspaceId,
       isActive: true,
       createdAt: new Date().toISOString(),
     });
-
     await ctx.db.insert("audit_logs", {
+      workspaceId,
       userId: identity.tokenIdentifier,
       action: "onboarding",
       resource: "package",
@@ -103,14 +125,13 @@ export const createStarterPackage = mutation({
       details: `Created starter package: ${args.name}`,
       createdAt: new Date().toISOString(),
     });
-
     return id;
   },
 });
 
-// ─── Create starter network device during onboarding ─────────────────────────
 export const createStarterDevice = mutation({
   args: {
+    workspaceId: v.id("workspaces"),
     name: v.string(),
     type: v.union(
       v.literal("router"),
@@ -122,33 +143,38 @@ export const createStarterDevice = mutation({
     ipAddress: v.string(),
     location: v.optional(v.string()),
   },
+  returns: v.id("network_devices"),
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) throw new Error("Unauthenticated");
-
+    const { identity } = await requireWorkspaceRole(ctx, args.workspaceId, [
+      "owner",
+      "admin",
+      "network",
+    ]);
+    const { workspaceId, ...deviceFields } = args;
+    const now = new Date().toISOString();
     const id = await ctx.db.insert("network_devices", {
-      ...args,
+      ...deviceFields,
+      workspaceId,
       status: "online",
-      lastSeen: new Date().toISOString(),
-      createdAt: new Date().toISOString(),
+      lastSeen: now,
+      createdAt: now,
     });
-
     await ctx.db.insert("audit_logs", {
+      workspaceId,
       userId: identity.tokenIdentifier,
       action: "onboarding",
       resource: "network_device",
       resourceId: id,
       details: `Added starter device: ${args.name}`,
-      createdAt: new Date().toISOString(),
+      createdAt: now,
     });
-
     return id;
   },
 });
 
-// ─── Create starter subscriber during onboarding ─────────────────────────────
 export const createStarterSubscriber = mutation({
   args: {
+    workspaceId: v.id("workspaces"),
     name: v.string(),
     phone: v.string(),
     email: v.optional(v.string()),
@@ -157,19 +183,30 @@ export const createStarterSubscriber = mutation({
     monthlyFee: v.number(),
     ipAddress: v.optional(v.string()),
   },
+  returns: v.id("subscribers"),
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) throw new Error("Unauthenticated");
-
+    const { identity } = await requireWorkspaceRole(ctx, args.workspaceId, [
+      "owner",
+      "admin",
+      "billing",
+    ]);
+    if (args.packageId) {
+      const pkg = await ctx.db.get(args.packageId);
+      if (!pkg || pkg.workspaceId !== args.workspaceId) {
+        throw new Error("Package does not belong to this workspace");
+      }
+    }
+    const { workspaceId, ...subscriberFields } = args;
     const id = await ctx.db.insert("subscribers", {
-      ...args,
+      ...subscriberFields,
+      workspaceId,
       status: "active",
       balance: 0,
       isOnline: false,
       createdAt: new Date().toISOString(),
     });
-
     await ctx.db.insert("audit_logs", {
+      workspaceId,
       userId: identity.tokenIdentifier,
       action: "onboarding",
       resource: "subscriber",
@@ -177,7 +214,6 @@ export const createStarterSubscriber = mutation({
       details: `Added first subscriber: ${args.name}`,
       createdAt: new Date().toISOString(),
     });
-
     return id;
   },
 });

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import { useForm, Controller } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -30,9 +31,13 @@ interface Props {
 }
 
 export default function StepSubscriber({ isDone, onComplete }: Props) {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [saving, setSaving] = useState(false);
   const createSubscriber = useMutation(api.onboarding.createStarterSubscriber);
-  const packages = useQuery(api.packages.listActive, {});
+  const packages = useQuery(
+    api.packages.listActive,
+    workspaceId ? { workspaceId } : "skip",
+  );
 
   const { register, handleSubmit, control, watch, setValue, formState: { errors } } = useForm<FormData>({
     resolver: zodResolver(schema),
@@ -49,9 +54,11 @@ export default function StepSubscriber({ isDone, onComplete }: Props) {
   };
 
   const onSubmit = async (data: FormData) => {
+    if (!workspaceId) return;
     setSaving(true);
     try {
       await createSubscriber({
+        workspaceId,
         name: data.name,
         phone: data.phone,
         email: data.email || undefined,

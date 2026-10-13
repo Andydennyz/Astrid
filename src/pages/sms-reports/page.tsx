@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import { Authenticated, Unauthenticated, AuthLoading } from "convex/react";
 import { SignInButton } from "@/components/ui/signin.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
@@ -41,20 +42,27 @@ const TYPE_COLORS = {
 };
 
 function SmsReportsInner() {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [statusFilter, setStatusFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [sendOpen, setSendOpen] = useState(false);
   const [debouncedSearch] = useDebounce(search, 300);
 
-  const stats = useQuery(api.sms.getStats, {});
+  const stats = useQuery(
+    api.sms.getStats,
+    workspaceId ? { workspaceId } : "skip",
+  );
   const { results, status, loadMore } = usePaginatedQuery(
     api.sms.list,
-    {
-      status: statusFilter as "sent" | "failed" | "pending" | "all",
-      type: typeFilter as "invoice" | "reminder" | "custom" | "system" | "all",
-      search: debouncedSearch || undefined,
-    },
+    workspaceId
+      ? {
+          workspaceId,
+          status: statusFilter as "sent" | "failed" | "pending" | "all",
+          type: typeFilter as "invoice" | "reminder" | "custom" | "system" | "all",
+          search: debouncedSearch || undefined,
+        }
+      : "skip",
     { initialNumItems: 25 },
   );
 

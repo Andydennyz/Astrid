@@ -1,12 +1,17 @@
 import { useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import { Spinner } from "@/components/ui/spinner.tsx";
 import OnboardingWizard from "./_components/onboarding-wizard.tsx";
 import OnboardingComplete from "./_components/onboarding-complete.tsx";
 
 export default function OnboardingPage() {
-  const progress = useQuery(api.onboarding.getProgress, {});
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
+  const progress = useQuery(
+    api.onboarding.getProgress,
+    workspaceId ? { workspaceId } : "skip",
+  );
 
   if (progress === undefined) {
     return (

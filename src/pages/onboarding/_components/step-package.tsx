@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -37,6 +38,7 @@ interface Props {
 }
 
 export default function StepPackage({ isDone, onComplete }: Props) {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [saving, setSaving] = useState(false);
   const createPackage = useMutation(api.onboarding.createStarterPackage);
 
@@ -57,9 +59,11 @@ export default function StepPackage({ isDone, onComplete }: Props) {
   };
 
   const onSubmit = async (data: FormData) => {
+    if (!workspaceId) return;
     setSaving(true);
     try {
       await createPackage({
+        workspaceId,
         name: data.name,
         type: data.type,
         downloadSpeed: data.downloadSpeed,

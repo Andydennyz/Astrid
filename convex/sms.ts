@@ -1,203 +1,238 @@
-import { query, mutation } from "./_generated/server";
+import { paginationResultValidator, paginationOptsValidator } from "convex/server";
 import { v } from "convex/values";
-import { paginationOptsValidator } from "convex/server";
+import { ConvexError } from "convex/values";
+import { mutation, query } from "./_generated/server";
+import schema from "./schema";
+import { requireWorkspaceRole } from "./model/workspace";
 
-// ─── List SMS logs ────────────────────────────────────────────────────────────
+const readableRoles = ["owner", "admin", "billing", "read_only"] as const;
+const smsType = v.union(
+  v.literal("invoice"),
+  v.literal("reminder"),
+  v.literal("custom"),
+  v.literal("system"),
+);
+const smsLogWithSubscriber = v.object({
+  _id: v.id("sms_logs"),
+  _creationTime: v.number(),
+  workspaceId: v.optional(v.id("workspaces")),
+  recipient: v.string(),
+  message: v.string(),
+  status: v.union(v.literal("sent"), v.literal("failed"), v.literal("pending")),
+  type: smsType,
+  subscriberId: v.optional(v.id("subscribers")),
+  cost: v.optional(v.number()),
+  sentAt: v.string(),
+  subscriberName: v.union(v.string(), v.null()),
+});
+
 export const list = query({
   args: {
+    workspaceId: v.id("workspaces"),
     paginationOpts: paginationOptsValidator,
     status: v.optional(
-      v.union(
-        v.literal("sent"),
-        v.literal("failed"),
-        v.literal("pending"),
-        v.literal("all"),
-      ),
+      v.union(v.literal("sent"), v.literal("failed"), v.literal("pending"), v.literal("all")),
     ),
-    type: v.optional(
-      v.union(
-        v.literal("invoice"),
-        v.literal("reminder"),
-        v.literal("custom"),
-        v.literal("system"),
-        v.literal("all"),
-      ),
-    ),
+    type: v.optional(v.union(smsType, v.literal("all"))),
     search: v.optional(v.string()),
   },
+  returns: paginationResultValidator(smsLogWithSubscriber),
   handler: async (ctx, args) => {
-    let page;
-    if (args.status && args.status !== "all") {
-      page = await ctx.db
-        .query("sms_logs")
-        .withIndex("by_status", (q) =>
-          q.eq("status", args.status as "sent" | "failed" | "pending"),
-        )
-        .order("desc")
-        .paginate(args.paginationOpts);
-    } else {
-      page = await ctx.db.query("sms_logs").order("desc").paginate(args.paginationOpts);
-    }
-
+    await requireWorkspaceRole(ctx, args.workspaceId, readableRoles);
+    const base = ctx.db.query("sms_logs");
+    const q =
+      args.status && args.status !== "all"
+        ? base.withIndex("by_workspace_and_status", (index) =>
+            index.eq("workspaceId", args.workspaceId).eq("status", args.status as "sent" | "failed" | "pending"),
+          )
+        : base.withIndex("by_workspace", (index) => index.eq("workspaceId", args.workspaceId));
+    const page = await q.order("desc").paginate(args.paginationOpts);
     const enriched = await Promise.all(
       page.page.map(async (log) => {
-        const subscriber = log.subscriberId
-          ? await ctx.db.get(log.subscriberId)
-          : null;
-        return { ...log, subscriberName: subscriber?.name ?? null };
+        const subscriber = log.subscriberId ? await ctx.db.get(log.subscriberId) : null;
+        return {
+          ...log,
+          subscriberName:
+            subscriber?.workspaceId === args.workspaceId ? subscriber.name : null,
+        };
       }),
     );
-
+    const search = args.search?.toLowerCase();
     const filtered = enriched.filter((log) => {
       if (args.type && args.type !== "all" && log.type !== args.type) return false;
-      if (args.search) {
-        const q = args.search.toLowerCase();
-        return (
-          log.recipient.toLowerCase().includes(q) ||
-          log.message.toLowerCase().includes(q) ||
-          (log.subscriberName?.toLowerCase().includes(q) ?? false)
-        );
-      }
-      return true;
+      return (
+        !search ||
+        log.recipient.toLowerCase().includes(search) ||
+        log.message.toLowerCase().includes(search) ||
+        (log.subscriberName?.toLowerCase().includes(search) ?? false)
+      );
     });
-
     return { ...page, page: filtered };
   },
 });
 
-// ─── Stats ────────────────────────────────────────────────────────────────────
 export const getStats = query({
-  args: {},
-  handler: async (ctx) => {
-    const all = await ctx.db.query("sms_logs").collect();
-    const totalCost = all.reduce((s, l) => s + (l.cost ?? 0), 0);
-
-    const now = new Date();
-    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
-    const thisMonth = all.filter((l) => l.sentAt >= startOfMonth);
-
+  args: { workspaceId: v.id("workspaces") },
+  returns: v.object({
+    total: v.number(),
+    sent: v.number(),
+    failed: v.number(),
+    pending: v.number(),
+    totalCost: v.number(),
+    thisMonthCount: v.number(),
+    invoiceCount: v.number(),
+    reminderCount: v.number(),
+    customCount: v.number(),
+    deliveryRate: v.number(),
+    truncated: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    await requireWorkspaceRole(ctx, args.workspaceId, readableRoles);
+    const fetched = await ctx.db
+      .query("sms_logs")
+      .withIndex("by_workspace_and_sent_at", (index) => index.eq("workspaceId", args.workspaceId))
+      .order("desc")
+      .take(1001);
+    const logs = fetched.slice(0, 1000);
+    const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
+    let sent = 0;
+    let failed = 0;
+    let pending = 0;
+    let totalCost = 0;
+    let thisMonthCount = 0;
+    let invoiceCount = 0;
+    let reminderCount = 0;
+    let customCount = 0;
+    for (const log of logs) {
+      if (log.status === "sent") sent++;
+      if (log.status === "failed") failed++;
+      if (log.status === "pending") pending++;
+      totalCost += log.cost ?? 0;
+      if (log.sentAt >= startOfMonth) thisMonthCount++;
+      if (log.type === "invoice") invoiceCount++;
+      if (log.type === "reminder") reminderCount++;
+      if (log.type === "custom") customCount++;
+    }
     return {
-      total: all.length,
-      sent: all.filter((l) => l.status === "sent").length,
-      failed: all.filter((l) => l.status === "failed").length,
-      pending: all.filter((l) => l.status === "pending").length,
+      total: logs.length,
+      sent,
+      failed,
+      pending,
       totalCost,
-      thisMonthCount: thisMonth.length,
-      invoiceCount: all.filter((l) => l.type === "invoice").length,
-      reminderCount: all.filter((l) => l.type === "reminder").length,
-      customCount: all.filter((l) => l.type === "custom").length,
-      deliveryRate:
-        all.length > 0
-          ? Math.round((all.filter((l) => l.status === "sent").length / all.length) * 100)
-          : 0,
+      thisMonthCount,
+      invoiceCount,
+      reminderCount,
+      customCount,
+      deliveryRate: logs.length ? Math.round((sent / logs.length) * 100) : 0,
+      truncated: fetched.length > 1000,
     };
   },
 });
 
-// ─── Send bulk SMS (simulated) ────────────────────────────────────────────────
 export const sendBulk = mutation({
   args: {
+    workspaceId: v.id("workspaces"),
     message: v.string(),
-    type: v.union(
-      v.literal("invoice"),
-      v.literal("reminder"),
-      v.literal("custom"),
-      v.literal("system"),
+    type: smsType,
+    targetGroup: v.union(
+      v.literal("all"),
+      v.literal("active"),
+      v.literal("suspended"),
+      v.literal("expired"),
+      v.literal("pending"),
     ),
-    // "all", "active", "suspended", "overdue" subscriber group
-    targetGroup: v.string(),
   },
+  returns: v.number(),
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) throw new Error("Unauthenticated");
-
-    // Fetch target subscribers
+    const { identity } = await requireWorkspaceRole(ctx, args.workspaceId, [
+      "owner",
+      "admin",
+      "billing",
+    ]);
     let subscribers;
     if (args.targetGroup === "all") {
-      subscribers = await ctx.db.query("subscribers").collect();
-    } else if (
-      args.targetGroup === "active" ||
-      args.targetGroup === "suspended" ||
-      args.targetGroup === "expired" ||
-      args.targetGroup === "pending"
-    ) {
       subscribers = await ctx.db
         .query("subscribers")
-        .withIndex("by_status", (q) =>
-          q.eq(
-            "status",
-            args.targetGroup as "active" | "suspended" | "expired" | "pending",
-          ),
-        )
-        .collect();
+        .withIndex("by_workspace", (index) => index.eq("workspaceId", args.workspaceId))
+        .take(501);
     } else {
-      subscribers = await ctx.db.query("subscribers").collect();
+      const status = args.targetGroup;
+      subscribers = await ctx.db
+        .query("subscribers")
+        .withIndex("by_workspace_and_status", (index) =>
+          index.eq("workspaceId", args.workspaceId).eq("status", status),
+        )
+        .take(501);
     }
-
+    if (subscribers.length > 500) {
+      throw new ConvexError("Bulk SMS is limited to 500 recipients per request");
+    }
     const now = new Date().toISOString();
-    let count = 0;
-
-    for (const sub of subscribers) {
+    for (const subscriber of subscribers) {
       await ctx.db.insert("sms_logs", {
-        recipient: sub.phone,
+        workspaceId: args.workspaceId,
+        recipient: subscriber.phone,
         message: args.message,
         status: "sent",
         type: args.type,
-        subscriberId: sub._id,
+        subscriberId: subscriber._id,
         cost: 1,
         sentAt: now,
       });
-      count++;
     }
-
     await ctx.db.insert("audit_logs", {
+      workspaceId: args.workspaceId,
       userId: identity.tokenIdentifier,
       action: "send_bulk_sms",
       resource: "sms_logs",
-      details: `Sent ${count} SMS (${args.type}) to group: ${args.targetGroup}`,
+      details: `Sent ${subscribers.length} SMS (${args.type}) to group: ${args.targetGroup}`,
       createdAt: now,
     });
-
-    return count;
+    return subscribers.length;
   },
 });
 
-// ─── Send single SMS (simulated) ──────────────────────────────────────────────
 export const sendSingle = mutation({
   args: {
+    workspaceId: v.id("workspaces"),
     recipient: v.string(),
     message: v.string(),
-    type: v.union(
-      v.literal("invoice"),
-      v.literal("reminder"),
-      v.literal("custom"),
-      v.literal("system"),
-    ),
+    type: smsType,
     subscriberId: v.optional(v.id("subscribers")),
   },
+  returns: v.id("sms_logs"),
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) throw new Error("Unauthenticated");
-
+    const { identity } = await requireWorkspaceRole(ctx, args.workspaceId, [
+      "owner",
+      "admin",
+      "billing",
+    ]);
+    if (args.subscriberId) {
+      const subscriber = await ctx.db.get(args.subscriberId);
+      if (!subscriber || subscriber.workspaceId !== args.workspaceId) {
+        throw new ConvexError("Subscriber does not belong to this workspace");
+      }
+    }
+    const now = new Date().toISOString();
     const id = await ctx.db.insert("sms_logs", {
+      workspaceId: args.workspaceId,
       recipient: args.recipient,
       message: args.message,
       status: "sent",
       type: args.type,
       subscriberId: args.subscriberId,
       cost: 1,
-      sentAt: new Date().toISOString(),
+      sentAt: now,
     });
-
     await ctx.db.insert("audit_logs", {
+      workspaceId: args.workspaceId,
       userId: identity.tokenIdentifier,
       action: "send_sms",
       resource: "sms_logs",
       resourceId: id,
       details: `Sent SMS to ${args.recipient}`,
-      createdAt: new Date().toISOString(),
+      createdAt: now,
     });
-
     return id;
   },
 });

@@ -2,23 +2,35 @@ import { Authenticated, Unauthenticated, AuthLoading } from "convex/react";
 import { SignInButton } from "@/components/ui/signin.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
 import { motion } from "motion/react";
-import { Settings, User, Bell, ShieldCheck } from "lucide-react";
+import { Settings, User, Bell, ShieldCheck, Users } from "lucide-react";
 import { useState } from "react";
 import { cn } from "@/lib/utils.ts";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import ProfileTab from "./_components/profile-tab.tsx";
 import NotificationsTab from "./_components/notifications-tab.tsx";
 import AuditLogsTab from "./_components/audit-logs-tab.tsx";
+import WorkspaceMembersTab from "./_components/workspace-members-tab.tsx";
 
 const TABS = [
   { id: "profile", label: "Profile", icon: User },
   { id: "notifications", label: "Notifications", icon: Bell },
   { id: "audit", label: "Audit Logs", icon: ShieldCheck },
+  { id: "workspace", label: "Workspace", icon: Users },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
 
 function SettingsInner() {
+  const { memberships, selectedWorkspaceId } = useWorkspace();
+  const selectedMembership = memberships.find(
+    (item) => item.workspaceId === selectedWorkspaceId,
+  );
+  const canManageWorkspace =
+    selectedMembership?.role === "owner" || selectedMembership?.role === "admin";
+  const visibleTabs = TABS.filter((tab) => tab.id !== "workspace" || canManageWorkspace);
   const [activeTab, setActiveTab] = useState<TabId>("profile");
+  const safeActiveTab =
+    activeTab === "workspace" && !canManageWorkspace ? "profile" : activeTab;
 
   return (
     <div className="p-4 lg:p-6 space-y-5">
@@ -47,13 +59,13 @@ function SettingsInner() {
         transition={{ duration: 0.3, delay: 0.05 }}
         className="flex items-center gap-1 border-b border-border"
       >
-        {TABS.map((tab) => (
+        {visibleTabs.map((tab) => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
             className={cn(
               "flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-all cursor-pointer",
-              activeTab === tab.id
+              safeActiveTab === tab.id
                 ? "border-primary text-primary"
                 : "border-transparent text-muted-foreground hover:text-foreground hover:border-border",
             )}
@@ -66,14 +78,15 @@ function SettingsInner() {
 
       {/* Tab content */}
       <motion.div
-        key={activeTab}
+        key={safeActiveTab}
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.25 }}
       >
-        {activeTab === "profile" && <ProfileTab />}
-        {activeTab === "notifications" && <NotificationsTab />}
-        {activeTab === "audit" && <AuditLogsTab />}
+        {safeActiveTab === "profile" && <ProfileTab />}
+        {safeActiveTab === "notifications" && <NotificationsTab />}
+        {safeActiveTab === "audit" && <AuditLogsTab />}
+        {safeActiveTab === "workspace" && <WorkspaceMembersTab />}
       </motion.div>
     </div>
   );

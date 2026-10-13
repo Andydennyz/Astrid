@@ -1,83 +1,172 @@
+import { paginationResultValidator, paginationOptsValidator } from "convex/server";
 import { v } from "convex/values";
-import { query, mutation } from "./_generated/server";
 import { ConvexError } from "convex/values";
-import { paginationOptsValidator } from "convex/server";
+import { mutation, query } from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
+import { requireWorkspaceRole } from "./model/workspace";
+
+const sessionStatus = v.union(v.literal("active"), v.literal("stopped"), v.literal("interim"));
+const connectionType = v.union(v.literal("pppoe"), v.literal("hotspot"), v.literal("static"));
+const sessionWithNames = v.object({
+  _id: v.id("router_sessions"),
+  _creationTime: v.number(),
+  workspaceId: v.optional(v.id("workspaces")),
+  routerId: v.optional(v.id("routers")),
+  subscriberId: v.optional(v.id("subscribers")),
+  username: v.string(),
+  nasIdentifier: v.string(),
+  nasIpAddress: v.optional(v.string()),
+  framedIpAddress: v.optional(v.string()),
+  calledStationId: v.optional(v.string()),
+  callingStationId: v.optional(v.string()),
+  sessionId: v.string(),
+  startTime: v.string(),
+  stopTime: v.optional(v.string()),
+  sessionTime: v.optional(v.number()),
+  inputOctets: v.optional(v.number()),
+  outputOctets: v.optional(v.number()),
+  inputGigawords: v.optional(v.number()),
+  outputGigawords: v.optional(v.number()),
+  status: sessionStatus,
+  terminateCause: v.optional(v.string()),
+  connectionType,
+  createdAt: v.string(),
+  subscriberName: v.union(v.string(), v.null()),
+  routerName: v.union(v.string(), v.null()),
+});
 
 export const list = query({
   args: {
+    workspaceId: v.id("workspaces"),
     paginationOpts: paginationOptsValidator,
     routerId: v.optional(v.id("routers")),
-    status: v.optional(v.union(v.literal("active"), v.literal("stopped"), v.literal("interim"))),
+    status: v.optional(sessionStatus),
   },
+  returns: paginationResultValidator(sessionWithNames),
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) throw new ConvexError({ message: "Not authenticated", code: "UNAUTHENTICATED" });
-
-    let baseQuery;
+    await requireWorkspaceRole(ctx, args.workspaceId, [
+      "owner",
+      "admin",
+      "network",
+      "read_only",
+    ]);
+    let q;
     if (args.routerId) {
-      baseQuery = ctx.db
-        .query("router_sessions")
-        .withIndex("by_router", (q) => q.eq("routerId", args.routerId));
-    } else if (args.status) {
-      baseQuery = ctx.db
-        .query("router_sessions")
-        .withIndex("by_status", (q) => q.eq("status", args.status!));
+      const router = await ctx.db.get(args.routerId);
+      if (!router || router.workspaceId !== args.workspaceId) {
+        throw new ConvexError("Router does not belong to this workspace");
+      }
+      q = args.status
+        ? ctx.db
+            .query("router_sessions")
+            .withIndex("by_workspace_and_router_and_status", (index) =>
+              index
+                .eq("workspaceId", args.workspaceId)
+                .eq("routerId", args.routerId!)
+                .eq("status", args.status!),
+            )
+        : ctx.db
+            .query("router_sessions")
+            .withIndex("by_workspace_and_router", (index) =>
+              index.eq("workspaceId", args.workspaceId).eq("routerId", args.routerId!),
+            );
     } else {
-      baseQuery = ctx.db.query("router_sessions");
+      q = args.status
+        ? ctx.db
+            .query("router_sessions")
+            .withIndex("by_workspace_and_status", (index) =>
+              index.eq("workspaceId", args.workspaceId).eq("status", args.status!),
+            )
+        : ctx.db
+            .query("router_sessions")
+            .withIndex("by_workspace", (index) => index.eq("workspaceId", args.workspaceId));
     }
-
-    const result = await baseQuery.order("desc").paginate(args.paginationOpts);
-
-    // Enrich with subscriber and router names
+    const page = await q.order("desc").paginate(args.paginationOpts);
     const enriched = await Promise.all(
-      result.page.map(async (session) => {
-        const subscriber = session.subscriberId ? await ctx.db.get(session.subscriberId) : null;
-        const router = session.routerId ? await ctx.db.get(session.routerId) : null;
-        return { ...session, subscriberName: subscriber?.name, routerName: router?.name };
+      page.page.map(async (session) => {
+        const [subscriber, router] = await Promise.all([
+          session.subscriberId ? ctx.db.get(session.subscriberId) : null,
+          session.routerId ? ctx.db.get(session.routerId) : null,
+        ]);
+        return {
+          ...session,
+          subscriberName:
+            subscriber?.workspaceId === args.workspaceId ? subscriber.name : null,
+          routerName: router?.workspaceId === args.workspaceId ? router.name : null,
+        };
       }),
     );
-
-    return { ...result, page: enriched };
+    return { ...page, page: enriched };
   },
 });
 
 export const getActiveSummary = query({
-  args: {},
-  handler: async (ctx) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) throw new ConvexError({ message: "Not authenticated", code: "UNAUTHENTICATED" });
-
-    const active = await ctx.db
+  args: { workspaceId: v.id("workspaces") },
+  returns: v.object({
+    total: v.number(),
+    byRouter: v.array(v.object({ routerName: v.string(), count: v.number() })),
+    truncated: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    await requireWorkspaceRole(ctx, args.workspaceId, [
+      "owner",
+      "admin",
+      "network",
+      "read_only",
+    ]);
+    const fetched = await ctx.db
       .query("router_sessions")
-      .withIndex("by_status", (q) => q.eq("status", "active"))
-      .collect();
-
-    const routers = await ctx.db.query("routers").collect();
-
-    // Group by router
-    const byRouter: Record<string, { routerName: string; count: number }> = {};
-    for (const session of active) {
+      .withIndex("by_workspace_and_status", (index) =>
+        index.eq("workspaceId", args.workspaceId).eq("status", "active"),
+      )
+      .take(1001);
+    const sessions = fetched.slice(0, 1000);
+    const counts = new Map<string, { routerId?: Id<"routers">; count: number }>();
+    for (const session of sessions) {
       const key = session.routerId ?? "unassigned";
-      if (!byRouter[key]) {
-        const router = routers.find((r) => r._id === session.routerId);
-        byRouter[key] = { routerName: router?.name ?? "Unknown", count: 0 };
-      }
-      byRouter[key].count++;
+      const existing = counts.get(key);
+      counts.set(key, { routerId: session.routerId, count: (existing?.count ?? 0) + 1 });
     }
-
-    return { total: active.length, byRouter: Object.values(byRouter) };
+    const byRouter = await Promise.all(
+      [...counts.entries()].map(async ([key, value]) => {
+        const router = value.routerId ? await ctx.db.get(value.routerId) : null;
+        return {
+          routerName:
+            router?.workspaceId === args.workspaceId ? router.name : key === "unassigned" ? "Unassigned" : "Unknown",
+          count: value.count,
+        };
+      }),
+    );
+    return { total: sessions.length, byRouter, truncated: fetched.length > 1000 };
   },
 });
 
 export const markDisconnected = mutation({
-  args: { sessionId: v.id("router_sessions") },
+  args: { workspaceId: v.id("workspaces"), sessionId: v.id("router_sessions") },
+  returns: v.null(),
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) throw new ConvexError({ message: "Not authenticated", code: "UNAUTHENTICATED" });
+    await requireWorkspaceRole(ctx, args.workspaceId, ["owner", "admin", "network"]);
+    const session = await ctx.db.get(args.sessionId);
+    if (!session || session.workspaceId !== args.workspaceId) {
+      throw new ConvexError("Session does not belong to this workspace");
+    }
+    if (session.routerId) {
+      const router = await ctx.db.get(session.routerId);
+      if (!router || router.workspaceId !== args.workspaceId) {
+        throw new ConvexError("Session router does not belong to this workspace");
+      }
+    }
+    if (session.subscriberId) {
+      const subscriber = await ctx.db.get(session.subscriberId);
+      if (!subscriber || subscriber.workspaceId !== args.workspaceId) {
+        throw new ConvexError("Session subscriber does not belong to this workspace");
+      }
+    }
     await ctx.db.patch(args.sessionId, {
       status: "stopped",
       stopTime: new Date().toISOString(),
       terminateCause: "Admin-Reset",
     });
+    return null;
   },
 });

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import type { Id } from "@/convex/_generated/dataModel.d.ts";
 import { Authenticated, Unauthenticated, AuthLoading } from "convex/react";
 import { SignInButton } from "@/components/ui/signin.tsx";
@@ -31,6 +32,7 @@ type EditData = {
 };
 
 function TicketsInner() {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [statusFilter, setStatusFilter] = useState("all");
   const [priorityFilter, setPriorityFilter] = useState("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
@@ -39,7 +41,10 @@ function TicketsInner() {
   const [editId, setEditId] = useState<Id<"tickets"> | null>(null);
   const [editData, setEditData] = useState<EditData | null>(null);
 
-  const stats = useQuery(api.tickets.getStats, {});
+  const stats = useQuery(
+    api.tickets.getStats,
+    workspaceId ? { workspaceId } : "skip",
+  );
 
   const handleEdit = (id: Id<"tickets">, data: EditData) => {
     setEditId(id);

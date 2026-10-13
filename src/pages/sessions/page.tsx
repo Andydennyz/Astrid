@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { usePaginatedQuery, useQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import { Authenticated, Unauthenticated } from "convex/react";
 import { SignInButton } from "@/components/ui/signin.tsx";
 import { Button } from "@/components/ui/button.tsx";
@@ -48,22 +49,29 @@ function StatusBadge({ status }: { status: "active" | "stopped" | "interim" }) {
 }
 
 function SessionsInner() {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "stopped" | "interim">("all");
   const disconnect = useMutation(api.sessions.markDisconnected);
-  const summary = useQuery(api.sessions.getActiveSummary, {});
+  const summary = useQuery(
+    api.sessions.getActiveSummary,
+    workspaceId ? { workspaceId } : "skip",
+  );
 
   const { results, status, loadMore } = usePaginatedQuery(
     api.sessions.list,
-    {
-      status: statusFilter === "all" ? undefined : statusFilter,
-    },
+    workspaceId
+      ? {
+          workspaceId,
+          status: statusFilter === "all" ? undefined : statusFilter,
+        }
+      : "skip",
     { initialNumItems: 25 },
   );
 
   const handleDisconnect = async (sessionId: (typeof results)[number]["_id"]) => {
-    if (!confirm("Mark this session as disconnected?")) return;
+    if (!workspaceId || !confirm("Mark this session as disconnected?")) return;
     try {
-      await disconnect({ sessionId });
+      await disconnect({ workspaceId, sessionId });
       toast.success("Session marked as disconnected");
     } catch {
       toast.error("Failed to disconnect session");

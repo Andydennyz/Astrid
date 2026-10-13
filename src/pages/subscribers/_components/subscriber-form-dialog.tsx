@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import type { Id } from "@/convex/_generated/dataModel.d.ts";
 import {
   Dialog,
@@ -59,11 +60,18 @@ type Props = {
 };
 
 export default function SubscriberFormDialog({ open, onClose, editId }: Props) {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [form, setForm] = useState<SubscriberFormData>(defaultForm);
   const [saving, setSaving] = useState(false);
 
-  const packages = useQuery(api.subscribers.getPackages, {});
-  const existing = useQuery(api.subscribers.getById, editId ? { id: editId } : "skip");
+  const packages = useQuery(
+    api.subscribers.getPackages,
+    workspaceId ? { workspaceId } : "skip",
+  );
+  const existing = useQuery(
+    api.subscribers.getById,
+    editId && workspaceId ? { id: editId, workspaceId } : "skip",
+  );
 
   const createSub = useMutation(api.subscribers.create);
   const updateSub = useMutation(api.subscribers.update);
@@ -94,6 +102,7 @@ export default function SubscriberFormDialog({ open, onClose, editId }: Props) {
     setForm((prev) => ({ ...prev, [key]: val }));
 
   const handleSubmit = async () => {
+    if (!workspaceId) return;
     if (!form.name.trim()) return toast.error("Name is required");
     if (!form.phone.trim()) return toast.error("Phone number is required");
     const monthlyFee = parseFloat(form.monthlyFee);
@@ -122,10 +131,10 @@ export default function SubscriberFormDialog({ open, onClose, editId }: Props) {
       };
 
       if (editId) {
-        await updateSub({ id: editId, ...payload });
+        await updateSub({ workspaceId, id: editId, ...payload });
         toast.success("Subscriber updated successfully");
       } else {
-        await createSub(payload);
+        await createSub({ workspaceId, ...payload });
         toast.success("Subscriber created successfully");
       }
       onClose();

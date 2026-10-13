@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import type { Id } from "@/convex/_generated/dataModel.d.ts";
 import {
   Dialog,
@@ -60,10 +61,14 @@ type Props = {
 };
 
 export default function TicketFormDialog({ open, onClose, editId, editData }: Props) {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [form, setForm] = useState<FormData>(DEFAULT);
   const [saving, setSaving] = useState(false);
 
-  const subscribers = useQuery(api.tickets.getSubscribersList, {});
+  const subscribers = useQuery(
+    api.tickets.getSubscribersList,
+    workspaceId ? { workspaceId } : "skip",
+  );
   const createTicket = useMutation(api.tickets.create);
   const updateTicket = useMutation(api.tickets.update);
 
@@ -87,6 +92,7 @@ export default function TicketFormDialog({ open, onClose, editId, editData }: Pr
     setForm((p) => ({ ...p, [key]: val }));
 
   const handleSubmit = async () => {
+    if (!workspaceId) return;
     if (!form.title.trim()) return toast.error("Title is required");
     if (!form.description.trim()) return toast.error("Description is required");
 
@@ -106,10 +112,10 @@ export default function TicketFormDialog({ open, onClose, editId, editData }: Pr
       };
 
       if (editId) {
-        await updateTicket({ id: editId, ...payload });
+        await updateTicket({ workspaceId, id: editId, ...payload });
         toast.success("Ticket updated");
       } else {
-        await createTicket(payload);
+        await createTicket({ workspaceId, ...payload });
         toast.success("Ticket created");
       }
       onClose();

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { usePaginatedQuery } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import { Authenticated, Unauthenticated } from "convex/react";
 import { SignInButton } from "@/components/ui/signin.tsx";
 import { Button } from "@/components/ui/button.tsx";
@@ -64,15 +65,19 @@ function JsonExpander({ label, value }: { label: string; value?: string }) {
 }
 
 function RadiusLogsInner() {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [typeFilter, setTypeFilter] = useState<"all" | "authorize" | "authenticate" | "accounting">("all");
   const [codeFilter, setCodeFilter] = useState<"all" | "accept" | "reject" | "error">("all");
 
   const { results, status, loadMore } = usePaginatedQuery(
     api.radius.listLogs,
-    {
-      type: typeFilter === "all" ? undefined : typeFilter,
-      responseCode: codeFilter === "all" ? undefined : codeFilter,
-    },
+    workspaceId
+      ? {
+          workspaceId,
+          type: typeFilter === "all" ? undefined : typeFilter,
+          responseCode: codeFilter === "all" ? undefined : codeFilter,
+        }
+      : "skip",
     { initialNumItems: 30 },
   );
 

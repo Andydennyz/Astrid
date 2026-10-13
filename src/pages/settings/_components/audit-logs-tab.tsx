@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import { usePaginatedQuery } from "convex/react";
 import { Input } from "@/components/ui/input.tsx";
 import { Button } from "@/components/ui/button.tsx";
@@ -36,19 +37,29 @@ function formatTs(iso: string) {
 }
 
 export default function AuditLogsTab() {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [resourceFilter, setResourceFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [debouncedSearch] = useDebounce(search, 300);
 
-  const stats = useQuery(api.audit_logs.getStats, {});
-  const resources = useQuery(api.audit_logs.getResources, {});
+  const stats = useQuery(
+    api.audit_logs.getStats,
+    workspaceId ? { workspaceId } : "skip",
+  );
+  const resources = useQuery(
+    api.audit_logs.getResources,
+    workspaceId ? { workspaceId } : "skip",
+  );
 
   const { results, status, loadMore } = usePaginatedQuery(
     api.audit_logs.list,
-    {
-      resource: resourceFilter !== "all" ? resourceFilter : undefined,
-      search: debouncedSearch || undefined,
-    },
+    workspaceId
+      ? {
+          workspaceId,
+          resource: resourceFilter !== "all" ? resourceFilter : undefined,
+          search: debouncedSearch || undefined,
+        }
+      : "skip",
     { initialNumItems: 30 },
   );
 

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import type { Id } from "@/convex/_generated/dataModel.d.ts";
 import {
   Dialog,
@@ -48,6 +49,7 @@ export default function RecordPaymentDialog({
   invoiceAmount,
   invoiceNumber,
 }: Props) {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [method, setMethod] = useState<Method>("mpesa");
   const [reference, setReference] = useState("");
   const [notes, setNotes] = useState("");
@@ -56,10 +58,11 @@ export default function RecordPaymentDialog({
   const recordPayment = useMutation(api.financials.recordPayment);
 
   const handleSubmit = async () => {
-    if (!invoiceId) return;
+    if (!invoiceId || !workspaceId) return;
     setSaving(true);
     try {
       await recordPayment({
+        workspaceId,
         invoiceId,
         method,
         reference: reference.trim() || undefined,

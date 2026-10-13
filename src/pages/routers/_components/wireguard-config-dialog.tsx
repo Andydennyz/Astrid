@@ -14,16 +14,33 @@ import { Badge } from "@/components/ui/badge.tsx";
 import { Copy, Check, Download, Eye, EyeOff } from "lucide-react";
 
 type Props = {
-  router: Doc<"routers">;
+  router: RouterProvisioningConfig;
   open: boolean;
   onOpenChange: (v: boolean) => void;
 };
 
+export type RouterProvisioningConfig = Pick<
+  Doc<"routers">,
+  | "name"
+  | "publicKey"
+  | "privateKey"
+  | "presharedKey"
+  | "tunnelIp"
+  | "serverPublicKey"
+  | "serverEndpoint"
+  | "serverTunnelIp"
+  | "allowedIPs"
+  | "dns"
+  | "radiusSecret"
+  | "nasIdentifier"
+  | "routerOsVersion"
+>;
+
 /**
- * Build a fully copy-paste-ready MikroTik RouterOS provisioning script.
- * No placeholder tokens — every value comes from the stored router record.
+ * Build a fully copy-paste-ready MikroTik RouterOS provisioning script from
+ * credentials held only in the client session.
  */
-function buildMikroTikScript(router: Doc<"routers">): string {
+function buildMikroTikScript(router: RouterProvisioningConfig): string {
   const osVersion = router.routerOsVersion ?? "v7";
 
   // Extract endpoint host/port

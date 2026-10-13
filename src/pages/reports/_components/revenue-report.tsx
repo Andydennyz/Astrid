@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
 import {
   BarChart,
@@ -23,8 +24,12 @@ const RANGE_OPTIONS = [
 ];
 
 export default function RevenueReport() {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [months, setMonths] = useState(6);
-  const data = useQuery(api.reports.getRevenueReport, { months });
+  const data = useQuery(
+    api.reports.getRevenueReport,
+    workspaceId ? { months, workspaceId } : "skip",
+  );
 
   if (!data) {
     return (

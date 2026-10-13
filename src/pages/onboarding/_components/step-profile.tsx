@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -26,6 +27,7 @@ interface Props {
 }
 
 export default function StepProfile({ user, isDone, onComplete }: Props) {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [saving, setSaving] = useState(false);
   const completeProfile = useMutation(api.onboarding.completeProfileStep);
 
@@ -39,9 +41,11 @@ export default function StepProfile({ user, isDone, onComplete }: Props) {
   });
 
   const onSubmit = async (data: FormData) => {
+    if (!workspaceId) return;
     setSaving(true);
     try {
       await completeProfile({
+        workspaceId,
         name: data.name,
         companyName: data.companyName,
         email: data.email || undefined,

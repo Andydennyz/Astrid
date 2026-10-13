@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
 import {
@@ -29,8 +30,12 @@ function formatBytes(bytes: number): string {
 }
 
 export default function NetworkReport() {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [days, setDays] = useState(7);
-  const data = useQuery(api.reports.getNetworkReport, { days });
+  const data = useQuery(
+    api.reports.getNetworkReport,
+    workspaceId ? { days, workspaceId } : "skip",
+  );
 
   if (!data) {
     return (

@@ -1,6 +1,7 @@
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { DefaultProviders } from "./components/providers/default.tsx";
 import AuthCallback from "./pages/auth/Callback.tsx";
+import AcceptInvitePage from "./pages/accept-invite/page.tsx";
 import AppLayout from "./components/layout/app-layout.tsx";
 
 // Pages
@@ -31,6 +32,7 @@ export default function App() {
         <Routes>
           {/* Auth callback — outside layout */}
           <Route path="/auth/callback" element={<AuthCallback />} />
+          <Route path="/accept-invite" element={<AcceptInvitePage />} />
 
           {/* Landing page — outside layout */}
           <Route path="/" element={<Index />} />

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import type { Id } from "@/convex/_generated/dataModel.d.ts";
 import { Authenticated, Unauthenticated, AuthLoading } from "convex/react";
 import { SignInButton } from "@/components/ui/signin.tsx";
@@ -22,6 +23,7 @@ import SubscriberFormDialog from "./_components/subscriber-form-dialog.tsx";
 import SubscriberDetailDrawer from "./_components/subscriber-detail-drawer.tsx";
 
 function SubscribersInner() {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [statusFilter, setStatusFilter] = useState("all");
   const [connFilter, setConnFilter] = useState("all");
   const [search, setSearch] = useState("");
@@ -29,7 +31,10 @@ function SubscribersInner() {
   const [editId, setEditId] = useState<Id<"subscribers"> | null>(null);
   const [viewId, setViewId] = useState<Id<"subscribers"> | null>(null);
 
-  const stats = useQuery(api.subscribers.getStats, {});
+  const stats = useQuery(
+    api.subscribers.getStats,
+    workspaceId ? { workspaceId } : "skip",
+  );
 
   const handleEdit = (id: Id<"subscribers">) => {
     setViewId(null);

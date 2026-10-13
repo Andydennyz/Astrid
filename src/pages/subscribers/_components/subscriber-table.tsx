@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { usePaginatedQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import type { Id } from "@/convex/_generated/dataModel.d.ts";
 import { Wifi, WifiOff, MoreHorizontal, ChevronLeft, ChevronRight } from "lucide-react";
 import { Badge } from "@/components/ui/badge.tsx";
@@ -39,6 +40,7 @@ type Props = {
 };
 
 export default function SubscriberTable({ statusFilter, connFilter, search, onSelect, onEdit }: Props) {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [selected, setSelected] = useState<Set<Id<"subscribers">>>(new Set());
   const [debouncedSearch] = useDebounce(search, 300);
 
@@ -47,11 +49,14 @@ export default function SubscriberTable({ statusFilter, connFilter, search, onSe
 
   const { results, status, loadMore } = usePaginatedQuery(
     api.subscribers.list,
-    {
-      status: statusFilter as "active" | "suspended" | "expired" | "pending" | "all",
-      connectionType: connFilter as "pppoe" | "hotspot" | "static" | "all",
-      search: debouncedSearch || undefined,
-    },
+    workspaceId
+      ? {
+          workspaceId,
+          status: statusFilter as "active" | "suspended" | "expired" | "pending" | "all",
+          connectionType: connFilter as "pppoe" | "hotspot" | "static" | "all",
+          search: debouncedSearch || undefined,
+        }
+      : "skip",
     { initialNumItems: 20 },
   );
 
@@ -74,8 +79,9 @@ export default function SubscriberTable({ statusFilter, connFilter, search, onSe
 
   const bulkUpdateStatus = async (newStatus: "active" | "suspended" | "expired" | "pending") => {
     if (selected.size === 0) return toast.error("Select subscribers first");
+    if (!workspaceId) return;
     try {
-      await updateStatus({ ids: Array.from(selected), status: newStatus });
+      await updateStatus({ workspaceId, ids: Array.from(selected), status: newStatus });
       toast.success(`${selected.size} subscriber(s) updated to ${newStatus}`);
       setSelected(new Set());
     } catch {
@@ -84,8 +90,9 @@ export default function SubscriberTable({ statusFilter, connFilter, search, onSe
   };
 
   const handleDelete = async (id: Id<"subscribers">) => {
+    if (!workspaceId) return;
     try {
-      await removeSub({ id });
+      await removeSub({ workspaceId, id });
       toast.success("Subscriber deleted");
     } catch {
       toast.error("Failed to delete subscriber");
@@ -302,16 +309,30 @@ export default function SubscriberTable({ statusFilter, connFilter, search, onSe
                           {sub.status !== "active" ? (
                             <DropdownMenuItem
                               className="text-green-400 cursor-pointer hover:bg-green-400/10"
-                              onClick={() => updateStatus({ ids: [sub._id], status: "active" })}
+                              onClick={() => {
+                                if (workspaceId) {
+                                  void updateStatus({
+                                    workspaceId,
+                                    ids: [sub._id],
+                                    status: "active",
+                                  });
+                                }
+                              }}
                             >
                               Activate
                             </DropdownMenuItem>
                           ) : (
                             <DropdownMenuItem
                               className="text-amber-400 cursor-pointer hover:bg-amber-400/10"
-                              onClick={() =>
-                                updateStatus({ ids: [sub._id], status: "suspended" })
-                              }
+                              onClick={() => {
+                                if (workspaceId) {
+                                  void updateStatus({
+                                    workspaceId,
+                                    ids: [sub._id],
+                                    status: "suspended",
+                                  });
+                                }
+                              }}
                             >
                               Suspend
                             </DropdownMenuItem>

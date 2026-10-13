@@ -12,6 +12,7 @@ import type * as audit_logs from "../audit_logs.js";
 import type * as dashboard from "../dashboard.js";
 import type * as financials from "../financials.js";
 import type * as http from "../http.js";
+import type * as model_workspace from "../model/workspace.js";
 import type * as network from "../network.js";
 import type * as notifications from "../notifications.js";
 import type * as onboarding from "../onboarding.js";
@@ -27,6 +28,9 @@ import type * as subscribers from "../subscribers.js";
 import type * as tickets from "../tickets.js";
 import type * as transactions from "../transactions.js";
 import type * as users from "../users.js";
+import type * as workspaceInvitations from "../workspaceInvitations.js";
+import type * as workspaceInvitationsActions from "../workspaceInvitationsActions.js";
+import type * as workspaces from "../workspaces.js";
 
 import type {
   ApiFromModules,
@@ -39,6 +43,7 @@ declare const fullApi: ApiFromModules<{
   dashboard: typeof dashboard;
   financials: typeof financials;
   http: typeof http;
+  "model/workspace": typeof model_workspace;
   network: typeof network;
   notifications: typeof notifications;
   onboarding: typeof onboarding;
@@ -54,6 +59,9 @@ declare const fullApi: ApiFromModules<{
   tickets: typeof tickets;
   transactions: typeof transactions;
   users: typeof users;
+  workspaceInvitations: typeof workspaceInvitations;
+  workspaceInvitationsActions: typeof workspaceInvitationsActions;
+  workspaces: typeof workspaces;
 }>;
 
 /**

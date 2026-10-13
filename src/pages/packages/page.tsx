@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { usePaginatedQuery } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import type { Id } from "@/convex/_generated/dataModel.d.ts";
 import { Authenticated, Unauthenticated, AuthLoading } from "convex/react";
 import { SignInButton } from "@/components/ui/signin.tsx";
@@ -30,26 +31,33 @@ import PackageFormDialog from "./_components/package-form-dialog.tsx";
 import { useQuery } from "convex/react";
 
 function PackagesInner() {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [typeFilter, setTypeFilter] = useState("all");
   const [activeFilter, setActiveFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [addOpen, setAddOpen] = useState(false);
   const [editId, setEditId] = useState<Id<"packages"> | null>(null);
 
-  const stats = useQuery(api.packages.getStats, {});
+  const stats = useQuery(
+    api.packages.getStats,
+    workspaceId ? { workspaceId } : "skip",
+  );
 
   const { results, status, loadMore } = usePaginatedQuery(
     api.packages.list,
-    {
-      type: typeFilter === "pppoe" || typeFilter === "hotspot" || typeFilter === "static"
-        ? typeFilter
-        : "all",
-      isActive:
-        activeFilter === "active" || activeFilter === "inactive"
-          ? activeFilter
-          : "all",
-      search: search || undefined,
-    },
+    workspaceId
+      ? {
+          workspaceId,
+          type: typeFilter === "pppoe" || typeFilter === "hotspot" || typeFilter === "static"
+            ? typeFilter
+            : "all",
+          isActive:
+            activeFilter === "active" || activeFilter === "inactive"
+              ? activeFilter
+              : "all",
+          search: search || undefined,
+        }
+      : "skip",
     { initialNumItems: 12 },
   );
 

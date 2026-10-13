@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import { Authenticated, Unauthenticated, AuthLoading } from "convex/react";
 import { SignInButton } from "@/components/ui/signin.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
@@ -22,14 +23,21 @@ import VolumeAreaChart from "./_components/volume-area-chart.tsx";
 import MethodBreakdown from "./_components/method-breakdown.tsx";
 
 function TransactionsInner() {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [statusFilter, setStatusFilter] = useState("all");
   const [methodFilter, setMethodFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [addOpen, setAddOpen] = useState(false);
 
-  const stats = useQuery(api.transactions.getStats, {});
-  const dailyVolume = useQuery(api.transactions.getDailyVolume, {});
+  const stats = useQuery(
+    api.transactions.getStats,
+    workspaceId ? { workspaceId } : "skip",
+  );
+  const dailyVolume = useQuery(
+    api.transactions.getDailyVolume,
+    workspaceId ? { workspaceId } : "skip",
+  );
 
   return (
     <div className="p-4 lg:p-6 space-y-5">

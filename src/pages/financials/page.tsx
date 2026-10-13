@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import type { Id } from "@/convex/_generated/dataModel.d.ts";
 import { Authenticated, Unauthenticated, AuthLoading } from "convex/react";
 import { SignInButton } from "@/components/ui/signin.tsx";
@@ -17,6 +18,7 @@ import RevenueBarChart from "./_components/revenue-bar-chart.tsx";
 import BulkGenerateDialog from "./_components/bulk-generate-dialog.tsx";
 
 function FinancialsInner() {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [statusFilter, setStatusFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
@@ -24,14 +26,37 @@ function FinancialsInner() {
   const [bulkGenOpen, setBulkGenOpen] = useState(false);
   const [markingOverdue, setMarkingOverdue] = useState(false);
 
-  const stats = useQuery(api.financials.getInvoiceStats, {});
-  const monthlyRevenue = useQuery(api.financials.getMonthlyRevenue, {});
+  const stats = useQuery(
+    api.financials.getInvoiceStats,
+    workspaceId ? { workspaceId } : "skip",
+  );
+  const monthlyRevenue = useQuery(
+    api.financials.getMonthlyRevenue,
+    workspaceId ? { workspaceId } : "skip",
+  );
   const markOverdue = useMutation(api.financials.markOverdueInvoices);
 
   const handleMarkOverdue = async () => {
     setMarkingOverdue(true);
     try {
-      const count = await markOverdue({});
+      if (!workspaceId) return;
+      let cursor: string | null = null;
+      let marked = 0;
+      let isDone = false;
+      while (!isDone) {
+        const result: {
+          marked: number;
+          isDone: boolean;
+          continueCursor: string;
+        } = await markOverdue({
+          workspaceId,
+          paginationOpts: { numItems: 100, cursor },
+        });
+        marked += result.marked;
+        cursor = result.continueCursor;
+        isDone = result.isDone;
+      }
+      const count = marked;
       if (count === 0) {
         toast.info("No past-due pending invoices found");
       } else {

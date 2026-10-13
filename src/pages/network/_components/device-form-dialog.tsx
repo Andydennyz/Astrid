@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import type { Id } from "@/convex/_generated/dataModel.d.ts";
 import {
   Dialog,
@@ -51,6 +52,7 @@ const EMPTY: EditData = {
 };
 
 export default function DeviceFormDialog({ open, onClose, editId, editData }: Props) {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const createDevice = useMutation(api.network.create);
   const updateDevice = useMutation(api.network.update);
 
@@ -65,6 +67,7 @@ export default function DeviceFormDialog({ open, onClose, editId, editData }: Pr
     setForm((prev) => ({ ...prev, [key]: value }));
 
   const handleSubmit = async () => {
+    if (!workspaceId) return;
     if (!form.name.trim() || !form.ipAddress.trim()) {
       toast.error("Name and IP address are required");
       return;
@@ -73,6 +76,7 @@ export default function DeviceFormDialog({ open, onClose, editId, editData }: Pr
     try {
       if (editId) {
         await updateDevice({
+          workspaceId,
           id: editId,
           name: form.name,
           type: form.type,
@@ -84,6 +88,7 @@ export default function DeviceFormDialog({ open, onClose, editId, editData }: Pr
         toast.success("Device updated");
       } else {
         await createDevice({
+          workspaceId,
           name: form.name,
           type: form.type,
           ipAddress: form.ipAddress,

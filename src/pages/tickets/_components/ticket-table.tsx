@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { usePaginatedQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import type { Id } from "@/convex/_generated/dataModel.d.ts";
 import { MoreHorizontal, ChevronRight, User } from "lucide-react";
 import { Badge } from "@/components/ui/badge.tsx";
@@ -69,6 +70,7 @@ type Props = {
 };
 
 export default function TicketTable({ statusFilter, priorityFilter, categoryFilter, search, onEdit }: Props) {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [debouncedSearch] = useDebounce(search, 300);
 
   const updateTicket = useMutation(api.tickets.update);
@@ -76,18 +78,22 @@ export default function TicketTable({ statusFilter, priorityFilter, categoryFilt
 
   const { results, status, loadMore } = usePaginatedQuery(
     api.tickets.list,
-    {
-      status: statusFilter as "open" | "in_progress" | "resolved" | "closed" | "all",
-      priority: priorityFilter as "low" | "medium" | "high" | "critical" | "all",
-      category: categoryFilter as "connectivity" | "billing" | "hardware" | "other" | "all",
-      search: debouncedSearch || undefined,
-    },
+    workspaceId
+      ? {
+          workspaceId,
+          status: statusFilter as "open" | "in_progress" | "resolved" | "closed" | "all",
+          priority: priorityFilter as "low" | "medium" | "high" | "critical" | "all",
+          category: categoryFilter as "connectivity" | "billing" | "hardware" | "other" | "all",
+          search: debouncedSearch || undefined,
+        }
+      : "skip",
     { initialNumItems: 20 },
   );
 
   const handleDelete = async (id: Id<"tickets">) => {
+    if (!workspaceId) return;
     try {
-      await removeTicket({ id });
+      await removeTicket({ workspaceId, id });
       toast.success("Ticket deleted");
     } catch {
       toast.error("Failed to delete ticket");
@@ -98,8 +104,9 @@ export default function TicketTable({ statusFilter, priorityFilter, categoryFilt
     id: Id<"tickets">,
     s: "open" | "in_progress" | "resolved" | "closed",
   ) => {
+    if (!workspaceId) return;
     try {
-      await updateTicket({ id, status: s });
+      await updateTicket({ workspaceId, id, status: s });
       toast.success(`Ticket marked as ${s.replace("_", " ")}`);
     } catch {
       toast.error("Failed to update ticket");

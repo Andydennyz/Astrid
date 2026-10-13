@@ -1,5 +1,6 @@
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import { Authenticated, Unauthenticated, AuthLoading } from "convex/react";
 import { SignInButton } from "@/components/ui/signin.tsx";
 import StatsCard from "./_components/stats-card.tsx";
@@ -23,10 +24,23 @@ import { motion } from "motion/react";
 
 function DashboardInner() {
   const { user } = useAuth();
-  const stats = useQuery(api.dashboard.getStats, {});
-  const revenueData = useQuery(api.dashboard.getRevenueChart, {});
-  const recentTx = useQuery(api.dashboard.getRecentTransactions, {});
-  const subscriberBreakdown = useQuery(api.dashboard.getSubscriberBreakdown, {});
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
+  const stats = useQuery(
+    api.dashboard.getStats,
+    workspaceId ? { workspaceId } : "skip",
+  );
+  const revenueData = useQuery(
+    api.dashboard.getRevenueChart,
+    workspaceId ? { workspaceId } : "skip",
+  );
+  const recentTx = useQuery(
+    api.dashboard.getRecentTransactions,
+    workspaceId ? { workspaceId } : "skip",
+  );
+  const subscriberBreakdown = useQuery(
+    api.dashboard.getSubscriberBreakdown,
+    workspaceId ? { workspaceId } : "skip",
+  );
 
   const isLoading = stats === undefined || revenueData === undefined;
 

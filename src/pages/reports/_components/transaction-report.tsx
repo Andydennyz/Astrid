@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
 import {
   BarChart,
@@ -27,8 +28,12 @@ const METHOD_COLORS: Record<string, string> = {
 };
 
 export default function TransactionReport() {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [days, setDays] = useState(30);
-  const data = useQuery(api.reports.getTransactionReport, { days });
+  const data = useQuery(
+    api.reports.getTransactionReport,
+    workspaceId ? { days, workspaceId } : "skip",
+  );
 
   if (!data) {
     return (

@@ -19,7 +19,7 @@ type Transaction = {
   type: string;
   method: string;
   status: string;
-  reference: string | undefined;
+  reference: string | null | undefined;
   createdAt: string;
 };
 

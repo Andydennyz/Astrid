@@ -1,5 +1,6 @@
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import type { Id } from "@/convex/_generated/dataModel.d.ts";
 import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge.tsx";
@@ -46,12 +47,14 @@ const typeLabels: Record<string, string> = {
 };
 
 export default function PackageCard({ pkg, onEdit }: Props) {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const toggleActive = useMutation(api.packages.toggleActive);
   const removeMutation = useMutation(api.packages.remove);
 
   const handleToggle = async () => {
+    if (!workspaceId) return;
     try {
-      await toggleActive({ id: pkg._id, isActive: !pkg.isActive });
+      await toggleActive({ workspaceId, id: pkg._id, isActive: !pkg.isActive });
       toast.success(`Package ${pkg.isActive ? "deactivated" : "activated"}`);
     } catch {
       toast.error("Failed to update package status");
@@ -59,8 +62,9 @@ export default function PackageCard({ pkg, onEdit }: Props) {
   };
 
   const handleDelete = async () => {
+    if (!workspaceId) return;
     try {
-      await removeMutation({ id: pkg._id });
+      await removeMutation({ workspaceId, id: pkg._id });
       toast.success("Package deleted");
     } catch {
       toast.error("Failed to delete package");

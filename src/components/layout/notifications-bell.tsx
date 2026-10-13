@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { useQuery, useMutation } from "convex/react";
 import { usePaginatedQuery } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import { Bell, CheckCheck, Info, CheckCircle, AlertTriangle, XCircle, Trash2, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
@@ -29,14 +30,18 @@ function formatTs(iso: string) {
 }
 
 export default function NotificationsBell() {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
 
-  const count = useQuery(api.notifications.unreadCount, {});
+  const count = useQuery(
+    api.notifications.unreadCount,
+    workspaceId ? { workspaceId } : "skip",
+  );
   const { results, status } = usePaginatedQuery(
     api.notifications.list,
-    { unreadOnly: false },
+    workspaceId ? { workspaceId, unreadOnly: false } : "skip",
     { initialNumItems: 20 },
   );
 
@@ -56,7 +61,8 @@ export default function NotificationsBell() {
   }, []);
 
   const handleClick = async (id: Id<"notifications">, link: string | undefined, read: boolean) => {
-    if (!read) await markRead({ id });
+    if (!workspaceId) return;
+    if (!read) await markRead({ workspaceId, id });
     if (link) { navigate(link); setOpen(false); }
   };
 
@@ -90,7 +96,9 @@ export default function NotificationsBell() {
                 variant="ghost"
                 size="sm"
                 className="h-6 text-[11px] text-muted-foreground hover:text-primary px-2"
-                onClick={() => markAllRead()}
+                onClick={() => {
+                  if (workspaceId) void markAllRead({ workspaceId });
+                }}
               >
                 <CheckCheck size={11} className="mr-1" />
                 Mark all read
@@ -145,7 +153,10 @@ export default function NotificationsBell() {
                           <div className="h-2 w-2 rounded-full bg-primary shrink-0 mt-1.5" />
                         )}
                         <button
-                          onClick={(e) => { e.stopPropagation(); remove({ id: n._id }); }}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (workspaceId) void remove({ workspaceId, id: n._id });
+                          }}
                           className="hidden group-hover:flex items-center justify-center h-6 w-6 rounded-md hover:bg-destructive/10 hover:text-destructive text-muted-foreground transition-colors shrink-0"
                         >
                           <Trash2 size={11} />

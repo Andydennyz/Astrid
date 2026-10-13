@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { usePaginatedQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import type { Id } from "@/convex/_generated/dataModel.d.ts";
 import { Button } from "@/components/ui/button.tsx";
 import { Badge } from "@/components/ui/badge.tsx";
@@ -75,6 +76,7 @@ function formatTs(iso: string | undefined) {
 }
 
 export default function DeviceTable({ statusFilter, typeFilter, search, onEdit }: Props) {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [debouncedSearch] = useDebounce(search, 300);
   const removeDevice = useMutation(api.network.remove);
   const toggleStatus = useMutation(api.network.toggleStatus);
@@ -87,17 +89,21 @@ export default function DeviceTable({ statusFilter, typeFilter, search, onEdit }
 
   const { results, status, loadMore } = usePaginatedQuery(
     api.network.list,
-    {
-      status: paginationStatus,
-      type: paginationType,
-      search: debouncedSearch || undefined,
-    },
+    workspaceId
+      ? {
+          workspaceId,
+          status: paginationStatus,
+          type: paginationType,
+          search: debouncedSearch || undefined,
+        }
+      : "skip",
     { initialNumItems: 20 },
   );
 
   const handleDelete = async (id: Id<"network_devices">) => {
+    if (!workspaceId) return;
     try {
-      await removeDevice({ id });
+      await removeDevice({ workspaceId, id });
       toast.success("Device removed");
       setConfirmDelete(null);
     } catch {
@@ -106,9 +112,10 @@ export default function DeviceTable({ statusFilter, typeFilter, search, onEdit }
   };
 
   const handleToggle = async (id: Id<"network_devices">, current: DeviceStatus) => {
+    if (!workspaceId) return;
     const next: DeviceStatus = current === "online" ? "offline" : "online";
     try {
-      await toggleStatus({ id, status: next });
+      await toggleStatus({ workspaceId, id, status: next });
       toast.success(`Device marked as ${next}`);
     } catch {
       toast.error("Failed to update status");
@@ -263,9 +270,15 @@ export default function DeviceTable({ statusFilter, typeFilter, search, onEdit }
                                 </DropdownMenuItem>
                                 <DropdownMenuItem
                                   className="cursor-pointer text-sm gap-2"
-                                  onClick={() =>
-                                    toggleStatus({ id: device._id, status: "maintenance" })
-                                  }
+                                  onClick={() => {
+                                    if (workspaceId) {
+                                      void toggleStatus({
+                                        workspaceId,
+                                        id: device._id,
+                                        status: "maintenance",
+                                      });
+                                    }
+                                  }}
                                 >
                                   <AlertTriangle size={13} /> Set maintenance
                                 </DropdownMenuItem>

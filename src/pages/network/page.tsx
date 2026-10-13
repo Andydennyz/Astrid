@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import type { Id } from "@/convex/_generated/dataModel.d.ts";
 import { Authenticated, Unauthenticated, AuthLoading } from "convex/react";
 import { SignInButton } from "@/components/ui/signin.tsx";
@@ -33,6 +34,7 @@ type EditData = {
 };
 
 function NetworkInner() {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [statusFilter, setStatusFilter] = useState("all");
   const [typeFilter, setTypeFilter] = useState("all");
   const [search, setSearch] = useState("");
@@ -40,7 +42,10 @@ function NetworkInner() {
   const [editId, setEditId] = useState<Id<"network_devices"> | null>(null);
   const [editData, setEditData] = useState<EditData | null>(null);
 
-  const stats = useQuery(api.network.getStats, {});
+  const stats = useQuery(
+    api.network.getStats,
+    workspaceId ? { workspaceId } : "skip",
+  );
 
   const handleEdit = (id: Id<"network_devices">, data: EditData) => {
     setEditId(id);

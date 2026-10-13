@@ -1,5 +1,6 @@
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
 import {
   PieChart,
@@ -24,7 +25,11 @@ const STATUS_COLORS: Record<string, string> = {
 const TYPE_COLORS = ["#0ea5e9", "#10b981", "#f59e0b"];
 
 export default function SubscriberReport() {
-  const data = useQuery(api.reports.getSubscriberReport, {});
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
+  const data = useQuery(
+    api.reports.getSubscriberReport,
+    workspaceId ? { workspaceId } : "skip",
+  );
 
   if (!data) {
     return (

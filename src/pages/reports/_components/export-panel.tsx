@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import { Spinner } from "@/components/ui/spinner.tsx";
 import { Download, Users, FileText, ArrowLeftRight } from "lucide-react";
@@ -71,24 +72,25 @@ function downloadCsv(data: Record<string, unknown>[], filename: string) {
 }
 
 function ExportCardItem({ card }: { card: ExportCard }) {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [exporting, setExporting] = useState(false);
   const Icon = card.icon;
 
   const subscriberData = useQuery(
     api.reports.exportSubscribers,
-    card.key === "subscribers" ? {} : "skip",
+    card.key === "subscribers" && workspaceId ? { workspaceId } : "skip",
   );
   const invoiceData = useQuery(
     api.reports.exportInvoices,
-    card.key === "invoices" ? {} : "skip",
+    card.key === "invoices" && workspaceId ? { workspaceId } : "skip",
   );
   const transactionData = useQuery(
     api.reports.exportTransactions,
-    card.key === "transactions" ? {} : "skip",
+    card.key === "transactions" && workspaceId ? { workspaceId } : "skip",
   );
   const overdueData = useQuery(
     api.reports.exportOverdueInvoices,
-    card.key === "overdue" ? {} : "skip",
+    card.key === "overdue" && workspaceId ? { workspaceId } : "skip",
   );
 
   const getData = () => {

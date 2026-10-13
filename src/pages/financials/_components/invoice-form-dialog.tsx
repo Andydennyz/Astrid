@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import type { Id } from "@/convex/_generated/dataModel.d.ts";
 import {
   Dialog,
@@ -45,11 +46,18 @@ type Props = {
 };
 
 export default function InvoiceFormDialog({ open, onClose, editId }: Props) {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [form, setForm] = useState<FormData>(defaultForm);
   const [saving, setSaving] = useState(false);
 
-  const subscribers = useQuery(api.financials.getSubscribersList, {});
-  const existing = useQuery(api.financials.getInvoiceById, editId ? { id: editId } : "skip");
+  const subscribers = useQuery(
+    api.financials.getSubscribersList,
+    workspaceId ? { workspaceId } : "skip",
+  );
+  const existing = useQuery(
+    api.financials.getInvoiceById,
+    editId && workspaceId ? { id: editId, workspaceId } : "skip",
+  );
 
   const createInvoice = useMutation(api.financials.createInvoice);
   const updateInvoice = useMutation(api.financials.updateInvoice);
@@ -72,6 +80,7 @@ export default function InvoiceFormDialog({ open, onClose, editId }: Props) {
     setForm((prev) => ({ ...prev, [key]: val }));
 
   const handleSubmit = async () => {
+    if (!workspaceId) return;
     if (form.subscriberId === "none") return toast.error("Select a subscriber");
     const amount = parseFloat(form.amount);
     if (isNaN(amount) || amount <= 0) return toast.error("Enter a valid amount");
@@ -82,6 +91,7 @@ export default function InvoiceFormDialog({ open, onClose, editId }: Props) {
     try {
       if (editId) {
         await updateInvoice({
+          workspaceId,
           id: editId,
           amount,
           description: form.description,
@@ -91,6 +101,7 @@ export default function InvoiceFormDialog({ open, onClose, editId }: Props) {
         toast.success("Invoice updated");
       } else {
         await createInvoice({
+          workspaceId,
           subscriberId: form.subscriberId as Id<"subscribers">,
           amount,
           description: form.description,

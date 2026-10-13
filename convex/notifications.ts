@@ -1,91 +1,111 @@
-import { query, mutation } from "./_generated/server";
+import { paginationResultValidator, paginationOptsValidator } from "convex/server";
 import { v } from "convex/values";
-import { paginationOptsValidator } from "convex/server";
+import { internalMutation, mutation, query } from "./_generated/server";
+import schema from "./schema";
+import { requireWorkspaceRole } from "./model/workspace";
 
-// ─── List notifications for current user ──────────────────────────────────────
+const readableRoles = ["owner", "admin", "billing", "network", "read_only"] as const;
+
 export const list = query({
   args: {
+    workspaceId: v.id("workspaces"),
     paginationOpts: paginationOptsValidator,
     unreadOnly: v.optional(v.boolean()),
   },
+  returns: paginationResultValidator(schema.doc("notifications")),
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) return { page: [], isDone: true, continueCursor: "" };
-
-    let q;
-    if (args.unreadOnly) {
-      q = ctx.db
-        .query("notifications")
-        .withIndex("by_user_and_read", (i) =>
-          i.eq("userId", identity.tokenIdentifier).eq("read", false),
+    const { identity } = await requireWorkspaceRole(ctx, args.workspaceId, readableRoles);
+    const base = ctx.db.query("notifications");
+    const q = args.unreadOnly
+      ? base.withIndex("by_workspace_and_user_and_read", (index) =>
+          index
+            .eq("workspaceId", args.workspaceId)
+            .eq("userId", identity.tokenIdentifier)
+            .eq("read", false),
+        )
+      : base.withIndex("by_workspace_and_user", (index) =>
+          index.eq("workspaceId", args.workspaceId).eq("userId", identity.tokenIdentifier),
         );
-    } else {
-      q = ctx.db
-        .query("notifications")
-        .withIndex("by_user", (i) => i.eq("userId", identity.tokenIdentifier));
-    }
-
     return await q.order("desc").paginate(args.paginationOpts);
   },
 });
 
-// ─── Unread count ──────────────────────────────────────────────────────────────
 export const unreadCount = query({
-  args: {},
-  handler: async (ctx) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) return 0;
+  args: { workspaceId: v.id("workspaces") },
+  returns: v.number(),
+  handler: async (ctx, args) => {
+    const { identity } = await requireWorkspaceRole(ctx, args.workspaceId, readableRoles);
     const unread = await ctx.db
       .query("notifications")
-      .withIndex("by_user_and_read", (i) =>
-        i.eq("userId", identity.tokenIdentifier).eq("read", false),
+      .withIndex("by_workspace_and_user_and_read", (index) =>
+        index
+          .eq("workspaceId", args.workspaceId)
+          .eq("userId", identity.tokenIdentifier)
+          .eq("read", false),
       )
-      .collect();
+      .take(1001);
     return unread.length;
   },
 });
 
-// ─── Mark as read ──────────────────────────────────────────────────────────────
 export const markRead = mutation({
-  args: { id: v.id("notifications") },
+  args: { workspaceId: v.id("workspaces"), id: v.id("notifications") },
+  returns: v.null(),
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) throw new Error("Unauthenticated");
+    const { identity } = await requireWorkspaceRole(ctx, args.workspaceId, readableRoles);
+    const notification = await ctx.db.get(args.id);
+    if (
+      !notification ||
+      notification.workspaceId !== args.workspaceId ||
+      notification.userId !== identity.tokenIdentifier
+    ) {
+      throw new Error("Notification not found");
+    }
     await ctx.db.patch(args.id, { read: true });
+    return null;
   },
 });
 
-// ─── Mark all as read ──────────────────────────────────────────────────────────
 export const markAllRead = mutation({
-  args: {},
-  handler: async (ctx) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) throw new Error("Unauthenticated");
-
+  args: { workspaceId: v.id("workspaces") },
+  returns: v.number(),
+  handler: async (ctx, args) => {
+    const { identity } = await requireWorkspaceRole(ctx, args.workspaceId, readableRoles);
     const unread = await ctx.db
       .query("notifications")
-      .withIndex("by_user_and_read", (i) =>
-        i.eq("userId", identity.tokenIdentifier).eq("read", false),
+      .withIndex("by_workspace_and_user_and_read", (index) =>
+        index
+          .eq("workspaceId", args.workspaceId)
+          .eq("userId", identity.tokenIdentifier)
+          .eq("read", false),
       )
-      .collect();
-
-    await Promise.all(unread.map((n) => ctx.db.patch(n._id, { read: true })));
+      .take(500);
+    await Promise.all(unread.map((notification) => ctx.db.patch(notification._id, { read: true })));
+    return unread.length;
   },
 });
 
-// ─── Delete notification ───────────────────────────────────────────────────────
 export const remove = mutation({
-  args: { id: v.id("notifications") },
+  args: { workspaceId: v.id("workspaces"), id: v.id("notifications") },
+  returns: v.null(),
   handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) throw new Error("Unauthenticated");
+    const { identity } = await requireWorkspaceRole(ctx, args.workspaceId, readableRoles);
+    const notification = await ctx.db.get(args.id);
+    if (
+      !notification ||
+      notification.workspaceId !== args.workspaceId ||
+      notification.userId !== identity.tokenIdentifier
+    ) {
+      throw new Error("Notification not found");
+    }
     await ctx.db.delete(args.id);
+    return null;
   },
 });
 
-// ─── Create notification (internal helper, used by other mutations) ────────────
-export const create = mutation({
+export const create = internalMutation({
   args: {
+    workspaceId: v.id("workspaces"),
     userId: v.string(),
     title: v.string(),
     message: v.string(),
@@ -97,7 +117,20 @@ export const create = mutation({
     ),
     link: v.optional(v.string()),
   },
+  returns: v.id("notifications"),
   handler: async (ctx, args) => {
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_token", (index) => index.eq("tokenIdentifier", args.userId))
+      .unique();
+    if (!user) throw new Error("Notification recipient not found");
+    const membership = await ctx.db
+      .query("workspace_members")
+      .withIndex("by_workspace_and_user", (index) =>
+        index.eq("workspaceId", args.workspaceId).eq("userId", user._id),
+      )
+      .unique();
+    if (!membership) throw new Error("Recipient is not a workspace member");
     return await ctx.db.insert("notifications", {
       ...args,
       read: false,
@@ -106,32 +139,30 @@ export const create = mutation({
   },
 });
 
-// ─── Seed demo notifications ───────────────────────────────────────────────────
 export const seedDemo = mutation({
-  args: {},
-  handler: async (ctx) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) throw new Error("Unauthenticated");
-
+  args: { workspaceId: v.id("workspaces") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { identity } = await requireWorkspaceRole(ctx, args.workspaceId, readableRoles);
     const demos = [
-      { title: "New subscriber registered", message: "John Mwangi has signed up for a 10Mbps PPPoE plan.", type: "success" as const, link: "/subscribers" },
-      { title: "Invoice overdue", message: "Invoice #INV-0042 for Mary Wanjiku is 5 days overdue.", type: "warning" as const, link: "/financials" },
-      { title: "Network device offline", message: "Router RB450G at Site B has gone offline.", type: "error" as const, link: "/network" },
-      { title: "Payment received", message: "Ksh 1,500 M-Pesa payment received from Brian Otieno.", type: "success" as const, link: "/transactions" },
-      { title: "Ticket assigned", message: "Ticket #T-023 (Router hardware failure) assigned to you.", type: "info" as const, link: "/tickets" },
-      { title: "Bulk SMS sent", message: "500 reminder SMS sent to active subscribers.", type: "info" as const, link: "/sms-reports" },
-      { title: "Subscriber suspended", message: "Esther Akinyi has been suspended due to non-payment.", type: "warning" as const, link: "/subscribers" },
+      { title: "New subscriber registered", message: "A new subscriber has signed up.", type: "success" as const, link: "/subscribers" },
+      { title: "Invoice overdue", message: "An invoice is overdue.", type: "warning" as const, link: "/financials" },
+      { title: "Network device offline", message: "A network device is offline.", type: "error" as const, link: "/network" },
+      { title: "Payment received", message: "A payment was received.", type: "success" as const, link: "/transactions" },
+      { title: "Ticket assigned", message: "A support ticket was assigned.", type: "info" as const, link: "/tickets" },
+      { title: "Bulk SMS sent", message: "A bulk SMS was sent.", type: "info" as const, link: "/sms-reports" },
+      { title: "Subscriber suspended", message: "A subscriber was suspended.", type: "warning" as const, link: "/subscribers" },
     ];
-
-    const now = new Date();
-    for (let i = 0; i < demos.length; i++) {
-      const ts = new Date(now.getTime() - i * 3_600_000).toISOString();
+    const now = Date.now();
+    for (const [index, demo] of demos.entries()) {
       await ctx.db.insert("notifications", {
+        workspaceId: args.workspaceId,
         userId: identity.tokenIdentifier,
-        ...demos[i],
-        read: i > 2,
-        createdAt: ts,
+        ...demo,
+        read: index > 2,
+        createdAt: new Date(now - index * 3_600_000).toISOString(),
       });
     }
+    return null;
   },
 });

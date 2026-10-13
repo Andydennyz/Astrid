@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import type { Id } from "@/convex/_generated/dataModel.d.ts";
 import {
   Dialog,
@@ -51,15 +52,24 @@ type Props = {
 };
 
 export default function TransactionFormDialog({ open, onClose, prefillSubscriberId }: Props) {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [form, setForm] = useState<FormData>(DEFAULT);
   const [saving, setSaving] = useState(false);
 
-  const subscribers = useQuery(api.transactions.getSubscribersList, {});
+  const subscribers = useQuery(
+    api.transactions.getSubscribersList,
+    workspaceId ? { workspaceId } : "skip",
+  );
   const openInvoices = useQuery(
     api.transactions.getOpenInvoices,
-    form.subscriberId !== "none"
-      ? { subscriberId: form.subscriberId as Id<"subscribers"> }
-      : {},
+    workspaceId
+      ? {
+          workspaceId,
+          ...(form.subscriberId !== "none"
+            ? { subscriberId: form.subscriberId as Id<"subscribers"> }
+            : {}),
+        }
+      : "skip",
   );
   const createTx = useMutation(api.transactions.create);
 
@@ -84,12 +94,14 @@ export default function TransactionFormDialog({ open, onClose, prefillSubscriber
     setForm((prev) => ({ ...prev, [key]: val }));
 
   const handleSubmit = async () => {
+    if (!workspaceId) return;
     const amount = parseFloat(form.amount);
     if (isNaN(amount) || amount <= 0) return toast.error("Enter a valid amount");
 
     setSaving(true);
     try {
       await createTx({
+        workspaceId,
         subscriberId:
           form.subscriberId !== "none"
             ? (form.subscriberId as Id<"subscribers">)

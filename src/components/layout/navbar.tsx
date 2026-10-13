@@ -7,6 +7,7 @@ import { useTheme } from "next-themes";
 import { cn } from "@/lib/utils.ts";
 import { useState } from "react";
 import NotificationsBell from "./notifications-bell.tsx";
+import { WorkspacePicker } from "./workspace-control.tsx";
 
 type NavbarProps = {
   onMenuToggle: () => void;
@@ -50,6 +51,10 @@ export default function Navbar({ onMenuToggle, title = "Dashboard" }: NavbarProp
           })}
         </span>
       </div>
+
+      <Authenticated>
+        <WorkspacePicker />
+      </Authenticated>
 
       <div className="flex-1" />
 

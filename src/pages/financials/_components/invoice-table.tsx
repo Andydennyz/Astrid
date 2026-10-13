@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { usePaginatedQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import type { Id } from "@/convex/_generated/dataModel.d.ts";
 import { MoreHorizontal, ChevronRight, CheckCircle } from "lucide-react";
 import RecordPaymentDialog from "./record-payment-dialog.tsx";
@@ -33,6 +34,7 @@ type Props = {
 };
 
 export default function InvoiceTable({ statusFilter, search, onEdit }: Props) {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [selected, setSelected] = useState<Set<Id<"invoices">>>(new Set());
   const [paymentInvoice, setPaymentInvoice] = useState<{
     id: Id<"invoices">;
@@ -46,10 +48,13 @@ export default function InvoiceTable({ statusFilter, search, onEdit }: Props) {
 
   const { results, status, loadMore } = usePaginatedQuery(
     api.financials.listInvoices,
-    {
-      status: statusFilter as "pending" | "paid" | "overdue" | "cancelled" | "all",
-      search: debouncedSearch || undefined,
-    },
+    workspaceId
+      ? {
+          workspaceId,
+          status: statusFilter as "pending" | "paid" | "overdue" | "cancelled" | "all",
+          search: debouncedSearch || undefined,
+        }
+      : "skip",
     { initialNumItems: 25 },
   );
 
@@ -64,13 +69,13 @@ export default function InvoiceTable({ statusFilter, search, onEdit }: Props) {
     setSelected(selected.size === results.length ? new Set() : new Set(results.map((r) => r._id)));
 
   const handleBulkPaid = async () => {
-    if (!selected.size) return;
+    if (!selected.size || !workspaceId) return;
     const unpaid = results
       .filter((r) => selected.has(r._id) && r.status !== "paid" && r.status !== "cancelled")
       .map((r) => r._id);
     if (!unpaid.length) return toast.error("No payable invoices selected");
     try {
-      await markAsPaid({ ids: unpaid });
+      await markAsPaid({ workspaceId, ids: unpaid });
       toast.success(`${unpaid.length} invoice(s) marked as paid`);
       setSelected(new Set());
     } catch {
@@ -79,8 +84,9 @@ export default function InvoiceTable({ statusFilter, search, onEdit }: Props) {
   };
 
   const handleDelete = async (id: Id<"invoices">) => {
+    if (!workspaceId) return;
     try {
-      await deleteInvoice({ id });
+      await deleteInvoice({ workspaceId, id });
       toast.success("Invoice deleted");
     } catch {
       toast.error("Failed to delete invoice");
@@ -283,7 +289,11 @@ export default function InvoiceTable({ statusFilter, search, onEdit }: Props) {
                           {inv.status !== "paid" && inv.status !== "cancelled" && (
                             <DropdownMenuItem
                               className="text-green-400 cursor-pointer hover:bg-green-400/10"
-                              onClick={() => markAsPaid({ ids: [inv._id] })}
+                              onClick={() => {
+                                if (workspaceId) {
+                                  void markAsPaid({ workspaceId, ids: [inv._id] });
+                                }
+                              }}
                             >
                               Mark as Paid
                             </DropdownMenuItem>

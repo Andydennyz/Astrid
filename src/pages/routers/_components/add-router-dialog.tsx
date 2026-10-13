@@ -4,6 +4,9 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import type { Id } from "@/convex/_generated/dataModel.d.ts";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
+import type { RouterProvisioningConfig } from "./wireguard-config-dialog.tsx";
 import { toast } from "sonner";
 import {
   Dialog,
@@ -65,9 +68,11 @@ type FormValues = z.infer<typeof schema>;
 type Props = {
   open: boolean;
   onOpenChange: (v: boolean) => void;
+  onCreated?: (routerId: Id<"routers">, config: RouterProvisioningConfig) => void;
 };
 
-export default function AddRouterDialog({ open, onOpenChange }: Props) {
+export default function AddRouterDialog({ open, onOpenChange, onCreated }: Props) {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const createRouter = useMutation(api.routers.create);
   const [generatingKeys, setGeneratingKeys] = useState(false);
   const [generatingPsk, setGeneratingPsk] = useState(false);
@@ -150,8 +155,10 @@ export default function AddRouterDialog({ open, onOpenChange }: Props) {
   };
 
   const onSubmit = async (values: FormValues) => {
+    if (!workspaceId) return;
     try {
-      await createRouter(values);
+      const routerId = await createRouter({ workspaceId, ...values });
+      onCreated?.(routerId, values);
       toast.success("Router added successfully");
       form.reset();
       onOpenChange(false);

@@ -1,5 +1,6 @@
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import type { Id } from "@/convex/_generated/dataModel.d.ts";
 import {
   Sheet,
@@ -53,19 +54,20 @@ type Props = {
 };
 
 export default function SubscriberDetailDrawer({ subscriberId, onClose, onEdit }: Props) {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [confirmDelete, setConfirmDelete] = useState(false);
   const sub = useQuery(
     api.subscribers.getById,
-    subscriberId ? { id: subscriberId } : "skip",
+    subscriberId && workspaceId ? { id: subscriberId, workspaceId } : "skip",
   );
   const updateStatus = useMutation(api.subscribers.updateStatus);
   const removeSub = useMutation(api.subscribers.remove);
 
   const handleToggleSuspend = async () => {
-    if (!subscriberId || !sub) return;
+    if (!subscriberId || !sub || !workspaceId) return;
     const newStatus = sub.status === "suspended" ? "active" : "suspended";
     try {
-      await updateStatus({ ids: [subscriberId], status: newStatus });
+      await updateStatus({ workspaceId, ids: [subscriberId], status: newStatus });
       toast.success(`Subscriber ${newStatus === "active" ? "activated" : "suspended"}`);
     } catch {
       toast.error("Failed to update status");
@@ -73,9 +75,9 @@ export default function SubscriberDetailDrawer({ subscriberId, onClose, onEdit }
   };
 
   const handleDelete = async () => {
-    if (!subscriberId) return;
+    if (!subscriberId || !workspaceId) return;
     try {
-      await removeSub({ id: subscriberId });
+      await removeSub({ workspaceId, id: subscriberId });
       toast.success("Subscriber deleted");
       onClose();
     } catch {

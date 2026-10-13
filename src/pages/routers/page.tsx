@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import { Authenticated, Unauthenticated } from "convex/react";
 import { SignInButton } from "@/components/ui/signin.tsx";
 import { Button } from "@/components/ui/button.tsx";
@@ -38,6 +39,9 @@ import {
 import type { Doc, Id } from "@/convex/_generated/dataModel.d.ts";
 import AddRouterDialog from "./_components/add-router-dialog.tsx";
 import WireGuardConfigDialog from "./_components/wireguard-config-dialog.tsx";
+import type { RouterProvisioningConfig } from "./_components/wireguard-config-dialog.tsx";
+
+type PublicRouter = Omit<Doc<"routers">, "privateKey" | "presharedKey" | "radiusSecret">;
 
 function StatusBadge({ status }: { status: Doc<"routers">["status"] }) {
   if (status === "online") return <Badge className="bg-green-500/15 text-green-400 border-green-500/30">Online</Badge>;
@@ -50,11 +54,15 @@ function RouterCard({
   onViewConfig,
   onDelete,
 }: {
-  router: Doc<"routers">;
-  onViewConfig: (r: Doc<"routers">) => void;
+  router: PublicRouter;
+  onViewConfig: (r: PublicRouter) => void;
   onDelete: (id: Id<"routers">) => void;
 }) {
-  const stats = useQuery(api.routers.getStats, { routerId: router._id });
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
+  const stats = useQuery(
+    api.routers.getStats,
+    workspaceId ? { workspaceId, routerId: router._id } : "skip",
+  );
 
   const formatBytes = (bytes: number) => {
     if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
@@ -174,19 +182,46 @@ function RoutersPageInner({
   externalAddOpen?: boolean;
   onExternalAddOpenChange?: (v: boolean) => void;
 }) {
-  const routers = useQuery(api.routers.list, {});
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
+  const routers = useQuery(
+    api.routers.list,
+    workspaceId ? { workspaceId } : "skip",
+  );
   const removeRouter = useMutation(api.routers.remove);
   const [addOpen, setAddOpen] = useState(false);
-  const [configRouter, setConfigRouter] = useState<Doc<"routers"> | null>(null);
+  const [configRouter, setConfigRouter] = useState<RouterProvisioningConfig | null>(null);
+  const [provisioningConfigs, setProvisioningConfigs] = useState<
+    Map<Id<"routers">, RouterProvisioningConfig>
+  >(() => new Map());
+
+  const handleRouterCreated = (
+    routerId: Id<"routers">,
+    config: RouterProvisioningConfig,
+  ) => {
+    setProvisioningConfigs((current) => new Map(current).set(routerId, config));
+    setConfigRouter(config);
+  };
+
+  const handleViewConfig = (router: PublicRouter) => {
+    const config = provisioningConfigs.get(router._id);
+    if (!config) {
+      toast.info(
+        "Provisioning secrets are only available when the router is created. Save its setup script securely.",
+      );
+      return;
+    }
+    setConfigRouter(config);
+  };
 
   // Use external state if provided, otherwise local
   const dialogOpen = externalAddOpen ?? addOpen;
   const setDialogOpen = onExternalAddOpenChange ?? setAddOpen;
 
   const handleDelete = async (id: Id<"routers">) => {
+    if (!workspaceId) return;
     if (!confirm("Delete this router? This will also remove its session history.")) return;
     try {
-      await removeRouter({ id });
+      await removeRouter({ workspaceId, id });
       toast.success("Router deleted");
     } catch {
       toast.error("Failed to delete router");
@@ -228,14 +263,18 @@ function RoutersPageInner({
             <RouterCard
               key={router._id}
               router={router}
-              onViewConfig={setConfigRouter}
+              onViewConfig={handleViewConfig}
               onDelete={handleDelete}
             />
           ))}
         </div>
       )}
 
-      <AddRouterDialog open={dialogOpen} onOpenChange={setDialogOpen} />
+      <AddRouterDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        onCreated={handleRouterCreated}
+      />
 
       {configRouter && (
         <WireGuardConfigDialog

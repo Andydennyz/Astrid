@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import type { Id } from "@/convex/_generated/dataModel.d.ts";
 import {
   Dialog,
@@ -48,9 +49,12 @@ type Props = {
 };
 
 export default function SendSmsDialog({ open, onClose }: Props) {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [tab, setTab] = useState<"bulk" | "single">("bulk");
   const [bulkMessage, setBulkMessage] = useState("");
-  const [bulkTarget, setBulkTarget] = useState("active");
+  const [bulkTarget, setBulkTarget] = useState<
+    "all" | "active" | "suspended" | "expired" | "pending"
+  >("active");
   const [bulkType, setBulkType] = useState<"custom" | "invoice" | "reminder" | "system">("custom");
 
   const [singleRecipient, setSingleRecipient] = useState("");
@@ -62,13 +66,18 @@ export default function SendSmsDialog({ open, onClose }: Props) {
 
   const sendBulk = useMutation(api.sms.sendBulk);
   const sendSingle = useMutation(api.sms.sendSingle);
-  const subscribers = useQuery(api.tickets.getSubscribersList, {});
+  const subscribers = useQuery(
+    api.tickets.getSubscribersList,
+    workspaceId ? { workspaceId } : "skip",
+  );
 
   const handleBulkSend = async () => {
     if (!bulkMessage.trim()) return toast.error("Message cannot be empty");
+    if (!workspaceId) return;
     setSending(true);
     try {
       const count = await sendBulk({
+        workspaceId,
         message: bulkMessage.trim(),
         type: bulkType,
         targetGroup: bulkTarget,
@@ -86,9 +95,11 @@ export default function SendSmsDialog({ open, onClose }: Props) {
   const handleSingleSend = async () => {
     if (!singleRecipient.trim()) return toast.error("Recipient number is required");
     if (!singleMessage.trim()) return toast.error("Message cannot be empty");
+    if (!workspaceId) return;
     setSending(true);
     try {
       await sendSingle({
+        workspaceId,
         recipient: singleRecipient.trim(),
         message: singleMessage.trim(),
         type: singleType,
@@ -129,7 +140,14 @@ export default function SendSmsDialog({ open, onClose }: Props) {
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1.5">
                 <Label className="text-xs text-muted-foreground">Target Group</Label>
-                <Select value={bulkTarget} onValueChange={setBulkTarget}>
+                <Select
+                  value={bulkTarget}
+                  onValueChange={(value) =>
+                    setBulkTarget(
+                      value as "all" | "active" | "suspended" | "expired" | "pending",
+                    )
+                  }
+                >
                   <SelectTrigger className="bg-background border-border text-foreground">
                     <SelectValue />
                   </SelectTrigger>

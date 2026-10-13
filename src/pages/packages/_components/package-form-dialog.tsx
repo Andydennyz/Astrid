@@ -4,6 +4,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
+import { useWorkspace } from "@/components/providers/workspace.tsx";
 import type { Id } from "@/convex/_generated/dataModel.d.ts";
 import { toast } from "sonner";
 import {
@@ -52,9 +53,13 @@ type Props = {
 };
 
 export default function PackageFormDialog({ open, onClose, editId }: Props) {
+  const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const createMutation = useMutation(api.packages.create);
   const updateMutation = useMutation(api.packages.update);
-  const existing = useQuery(api.packages.getById, editId ? { id: editId } : "skip");
+  const existing = useQuery(
+    api.packages.getById,
+    editId && workspaceId ? { id: editId, workspaceId } : "skip",
+  );
 
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
@@ -97,12 +102,13 @@ export default function PackageFormDialog({ open, onClose, editId }: Props) {
   }, [editId, existing, form]);
 
   const onSubmit = async (values: FormValues) => {
+    if (!workspaceId) return;
     try {
       if (editId) {
-        await updateMutation({ id: editId, ...values });
+        await updateMutation({ workspaceId, id: editId, ...values });
         toast.success("Package updated successfully");
       } else {
-        await createMutation(values);
+        await createMutation({ workspaceId, ...values });
         toast.success("Package created successfully");
       }
       onClose();
