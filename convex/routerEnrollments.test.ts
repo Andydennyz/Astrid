@@ -4,10 +4,14 @@ import { convexTest } from "convex-test";
 import { describe, expect, it } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
+import { createWorkspaceFixture } from "../src/test/workspace-fixtures";
 
 const modules = import.meta.glob("./**/*.ts");
 
-function authenticatedTestUser(t: ReturnType<typeof convexTest>, subject: string) {
+function authenticatedTestUser(
+  t: ReturnType<typeof convexTest>,
+  subject: string,
+) {
   return t.withIdentity({
     issuer: "https://issuer.example.test",
     subject,
@@ -21,7 +25,11 @@ describe("router enrollment staging", () => {
   it("creates a high-entropy one-time token and stores only its hash", async () => {
     const t = convexTest(schema, modules);
     const owner = authenticatedTestUser(t, "router-enrollment-owner");
-    const workspaceId = await owner.mutation(api.workspaces.create, { name: "Router workspace" });
+    const workspaceId = await createWorkspaceFixture(
+      t,
+      owner,
+      "Router workspace",
+    );
 
     const enrollment = await owner.action(api.routerEnrollments.create, {
       workspaceId,
@@ -36,14 +44,18 @@ describe("router enrollment staging", () => {
     const stored = await t.run(async (ctx) =>
       ctx.db
         .query("router_enrollments")
-        .withIndex("by_workspace", (index) => index.eq("workspaceId", workspaceId))
+        .withIndex("by_workspace", (index) =>
+          index.eq("workspaceId", workspaceId),
+        )
         .first(),
     );
     expect(stored).not.toBeNull();
     expect(stored?.tokenHash).toMatch(/^[a-f0-9]{64}$/);
     expect(stored?.tokenHash).not.toBe(enrollment.token);
     expect(stored).not.toHaveProperty("token");
-    expect(await owner.query(api.routerEnrollments.list, { workspaceId })).toMatchObject([
+    expect(
+      await owner.query(api.routerEnrollments.list, { workspaceId }),
+    ).toMatchObject([
       {
         _id: enrollment.enrollmentId,
         name: "Branch Router",
@@ -52,17 +64,17 @@ describe("router enrollment staging", () => {
         status: "pending",
       },
     ]);
-    expect(await owner.query(api.routerEnrollments.list, { workspaceId })).not.toContainEqual(
-      expect.objectContaining({ token: enrollment.token }),
-    );
+    expect(
+      await owner.query(api.routerEnrollments.list, { workspaceId }),
+    ).not.toContainEqual(expect.objectContaining({ token: enrollment.token }));
   });
 
   it("rejects unauthorized roles and isolates records and revocation by workspace", async () => {
     const t = convexTest(schema, modules);
     const owner = authenticatedTestUser(t, "router-enrollment-owner-two");
     const reader = authenticatedTestUser(t, "router-enrollment-reader");
-    const workspaceA = await owner.mutation(api.workspaces.create, { name: "Workspace A" });
-    const workspaceB = await owner.mutation(api.workspaces.create, { name: "Workspace B" });
+    const workspaceA = await createWorkspaceFixture(t, owner, "Workspace A");
+    const workspaceB = await createWorkspaceFixture(t, owner, "Workspace B");
     const readerId = await reader.mutation(api.users.updateCurrentUser, {});
     await t.run(async (ctx) => {
       await ctx.db.insert("workspace_members", {
@@ -103,14 +115,19 @@ describe("router enrollment staging", () => {
         enrollmentId: enrollment.enrollmentId,
       }),
     ).resolves.toBeNull();
-    await expect(owner.query(api.routerEnrollments.list, { workspaceId: workspaceA })).resolves
-      .toMatchObject([{ status: "revoked" }]);
+    await expect(
+      owner.query(api.routerEnrollments.list, { workspaceId: workspaceA }),
+    ).resolves.toMatchObject([{ status: "revoked" }]);
   });
 
   it("rejects reused token hashes and permits a new enrollment after expiry", async () => {
     const t = convexTest(schema, modules);
     const owner = authenticatedTestUser(t, "router-enrollment-expiry-owner");
-    const workspaceId = await owner.mutation(api.workspaces.create, { name: "Expiry workspace" });
+    const workspaceId = await createWorkspaceFixture(
+      t,
+      owner,
+      "Expiry workspace",
+    );
     const commonArgs = {
       workspaceId,
       name: "Expiry router",
@@ -129,14 +146,22 @@ describe("router enrollment staging", () => {
     const firstEnrollment = await t.run(async (ctx) => {
       const row = await ctx.db
         .query("router_enrollments")
-        .withIndex("by_workspace", (index) => index.eq("workspaceId", workspaceId))
+        .withIndex("by_workspace", (index) =>
+          index.eq("workspaceId", workspaceId),
+        )
         .first();
       if (!row) throw new Error("Expected enrollment row");
       await ctx.db.patch(row._id, { expiresAt: Date.now() - 1 });
       return row._id;
     });
-    await expect(owner.query(api.routerEnrollments.list, { workspaceId })).resolves.toMatchObject([
-      { _id: firstEnrollment, status: "pending", expiresAt: expect.any(Number) },
+    await expect(
+      owner.query(api.routerEnrollments.list, { workspaceId }),
+    ).resolves.toMatchObject([
+      {
+        _id: firstEnrollment,
+        status: "pending",
+        expiresAt: expect.any(Number),
+      },
     ]);
     await expect(
       owner.action(api.routerEnrollments.create, {
@@ -145,16 +170,96 @@ describe("router enrollment staging", () => {
         routerOsVersion: "v7",
       }),
     ).resolves.toMatchObject({ token: expect.any(String) });
-    await expect(owner.query(api.routerEnrollments.list, { workspaceId })).resolves.toMatchObject([
+    await expect(
+      owner.query(api.routerEnrollments.list, { workspaceId }),
+    ).resolves.toMatchObject([
       { name: "Expiry router", status: "pending" },
       { _id: firstEnrollment, status: "expired" },
     ]);
   });
 
+  it("removes revoked and expired enrollments but protects active and redeemed ones", async () => {
+    const t = convexTest(schema, modules);
+    const owner = authenticatedTestUser(t, "router-enrollment-cleanup-owner");
+    const workspaceId = await createWorkspaceFixture(
+      t,
+      owner,
+      "Cleanup workspace",
+    );
+    const active = await owner.action(api.routerEnrollments.create, {
+      workspaceId,
+      name: "Active router",
+      routerOsVersion: "v7",
+    });
+
+    await expect(
+      owner.mutation(api.routerEnrollments.remove, {
+        workspaceId,
+        enrollmentId: active.enrollmentId,
+      }),
+    ).rejects.toThrow(/revoke the active enrollment/i);
+
+    await owner.mutation(api.routerEnrollments.revoke, {
+      workspaceId,
+      enrollmentId: active.enrollmentId,
+    });
+    await expect(
+      owner.mutation(api.routerEnrollments.remove, {
+        workspaceId,
+        enrollmentId: active.enrollmentId,
+      }),
+    ).resolves.toBeNull();
+
+    const expired = await owner.action(api.routerEnrollments.create, {
+      workspaceId,
+      name: "Expired router",
+      routerOsVersion: "v7",
+    });
+    await t.run(async (ctx) => {
+      await ctx.db.patch(expired.enrollmentId, {
+        status: "expired",
+        expiresAt: Date.now() - 1,
+      });
+    });
+    await expect(
+      owner.mutation(api.routerEnrollments.remove, {
+        workspaceId,
+        enrollmentId: expired.enrollmentId,
+      }),
+    ).resolves.toBeNull();
+
+    const redeemed = await owner.action(api.routerEnrollments.create, {
+      workspaceId,
+      name: "Redeemed router",
+      routerOsVersion: "v7",
+    });
+    await owner.action(api.routerEnrollments.redeem, {
+      workspaceId,
+      enrollmentId: redeemed.enrollmentId,
+      token: redeemed.token,
+      routerPublicKey: `${"C".repeat(43)}=`,
+      radiusSecret: "e".repeat(64),
+    });
+    await expect(
+      owner.mutation(api.routerEnrollments.remove, {
+        workspaceId,
+        enrollmentId: redeemed.enrollmentId,
+      }),
+    ).rejects.toThrow(/redeemed enrollment cannot be removed/i);
+
+    await expect(
+      owner.query(api.routerEnrollments.list, { workspaceId }),
+    ).resolves.toMatchObject([{ name: "Redeemed router", status: "redeemed" }]);
+  });
+
   it("does not create a second live enrollment for the same router name", async () => {
     const t = convexTest(schema, modules);
     const owner = authenticatedTestUser(t, "router-enrollment-duplicate-owner");
-    const workspaceId = await owner.mutation(api.workspaces.create, { name: "Duplicate workspace" });
+    const workspaceId = await createWorkspaceFixture(
+      t,
+      owner,
+      "Duplicate workspace",
+    );
     await owner.action(api.routerEnrollments.create, {
       workspaceId,
       name: "same-router",
@@ -172,7 +277,7 @@ describe("router enrollment staging", () => {
   it("binds a RouterOS-generated public key once and never stores private-key material", async () => {
     const t = convexTest(schema, modules);
     const owner = authenticatedTestUser(t, "router-enrollment-key-owner");
-    const workspaceId = await owner.mutation(api.workspaces.create, { name: "Key workspace" });
+    const workspaceId = await createWorkspaceFixture(t, owner, "Key workspace");
     const enrollment = await owner.action(api.routerEnrollments.create, {
       workspaceId,
       name: "Key router",
@@ -191,19 +296,18 @@ describe("router enrollment staging", () => {
       }),
     ).rejects.toThrow(/token is invalid/i);
 
-    const credentials = await owner.action(
-      api.routerEnrollments.redeem,
-      {
-        workspaceId,
-        enrollmentId: enrollment.enrollmentId,
-        token: enrollment.token,
-        routerPublicKey,
-        radiusSecret,
-      },
-    );
+    const credentials = await owner.action(api.routerEnrollments.redeem, {
+      workspaceId,
+      enrollmentId: enrollment.enrollmentId,
+      token: enrollment.token,
+      routerPublicKey,
+      radiusSecret,
+    });
     expect(credentials.nasIdentifier).toMatch(/^astrid-[a-f0-9]{32}$/);
     expect(credentials).not.toHaveProperty("radiusSecret");
-    const createdRouter = await t.run(async (ctx) => ctx.db.get(credentials.routerId));
+    const createdRouter = await t.run(async (ctx) =>
+      ctx.db.get(credentials.routerId),
+    );
     expect(createdRouter).toMatchObject({
       _id: credentials.routerId,
       workspaceId,
@@ -222,6 +326,16 @@ describe("router enrollment staging", () => {
     ]);
     expect(listedRouters[0]).not.toHaveProperty("radiusSecretHash");
     expect(listedRouters[0]).not.toHaveProperty("privateKey");
+    expect(listedRouters[0]).not.toHaveProperty("normalizedName");
+    const publicRouter = await owner.query(api.routers.getById, {
+      workspaceId,
+      id: credentials.routerId,
+    });
+    expect(publicRouter).toMatchObject({
+      _id: credentials.routerId,
+      name: "Key router",
+    });
+    expect(publicRouter).not.toHaveProperty("normalizedName");
 
     await expect(
       owner.action(api.routerEnrollments.redeem, {
@@ -231,9 +345,14 @@ describe("router enrollment staging", () => {
         routerPublicKey,
         radiusSecret,
       }),
-    ).resolves.toEqual({ routerId: credentials.routerId, nasIdentifier: credentials.nasIdentifier });
+    ).resolves.toEqual({
+      routerId: credentials.routerId,
+      nasIdentifier: credentials.nasIdentifier,
+    });
 
-    const redeemed = await owner.query(api.routerEnrollments.list, { workspaceId });
+    const redeemed = await owner.query(api.routerEnrollments.list, {
+      workspaceId,
+    });
     expect(redeemed).toMatchObject([
       {
         _id: enrollment.enrollmentId,
@@ -243,7 +362,9 @@ describe("router enrollment staging", () => {
       },
     ]);
 
-    const stored = await t.run(async (ctx) => ctx.db.get(enrollment.enrollmentId));
+    const stored = await t.run(async (ctx) =>
+      ctx.db.get(enrollment.enrollmentId),
+    );
     expect(stored).not.toHaveProperty("privateKey");
     expect(stored).not.toHaveProperty("presharedKey");
     await expect(
@@ -274,8 +395,15 @@ describe("router enrollment staging", () => {
 
   it("does not allow a new enrollment to reuse a registered router name", async () => {
     const t = convexTest(schema, modules);
-    const owner = authenticatedTestUser(t, "router-enrollment-existing-router-owner");
-    const workspaceId = await owner.mutation(api.workspaces.create, { name: "Existing router workspace" });
+    const owner = authenticatedTestUser(
+      t,
+      "router-enrollment-existing-router-owner",
+    );
+    const workspaceId = await createWorkspaceFixture(
+      t,
+      owner,
+      "Existing router workspace",
+    );
     const enrollment = await owner.action(api.routerEnrollments.create, {
       workspaceId,
       name: "Core Router",

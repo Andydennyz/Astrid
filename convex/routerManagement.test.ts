@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
+import { createWorkspaceFixture } from "../src/test/workspace-fixtures";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -46,9 +47,7 @@ describe("router management setup records", () => {
   it("stores metadata only and allows the workspace operator to track manual application", async () => {
     const t = convexTest(schema, modules);
     const owner = authenticatedTestUser(t, "management-owner");
-    const workspaceId = await owner.mutation(api.workspaces.create, {
-      name: "Router management workspace",
-    });
+    const workspaceId = await createWorkspaceFixture(t, owner, "Router management workspace");
     const routerId = await insertRouter(t, workspaceId);
     const setupId = await owner.mutation(api.routers.recordManagementSetup, {
       workspaceId,
@@ -83,8 +82,8 @@ describe("router management setup records", () => {
     const t = convexTest(schema, modules);
     const owner = authenticatedTestUser(t, "management-boundary-owner");
     const reader = authenticatedTestUser(t, "management-boundary-reader");
-    const workspaceA = await owner.mutation(api.workspaces.create, { name: "Workspace A" });
-    const workspaceB = await owner.mutation(api.workspaces.create, { name: "Workspace B" });
+    const workspaceA = await createWorkspaceFixture(t, owner, "Workspace A");
+    const workspaceB = await createWorkspaceFixture(t, owner, "Workspace B");
     const routerId = await insertRouter(t, workspaceA);
     const readerId = await reader.mutation(api.users.updateCurrentUser, {});
     await t.run(async (ctx) => {

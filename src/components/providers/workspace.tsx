@@ -4,7 +4,6 @@ import {
   useContext,
   useEffect,
   useMemo,
-  useRef,
   useState,
 } from "react";
 import { useConvexAuth, useMutation, useQuery } from "convex/react";
@@ -25,7 +24,7 @@ type WorkspaceContextValue = {
   loading: boolean;
   error: string | null;
   selectWorkspace: (workspaceId: Id<"workspaces">) => void;
-  createWorkspace: (name: string) => Promise<Id<"workspaces">>;
+  requestWorkspaceCreation: (name: string) => Promise<Id<"workspace_creation_requests">>;
 };
 
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
@@ -48,7 +47,7 @@ function persistWorkspaceId(workspaceId: Id<"workspaces"> | null) {
 }
 
 function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : "Unable to create workspace.";
+  return error instanceof Error ? error.message : "Unable to request a workspace.";
 }
 
 export function WorkspaceProvider({
@@ -61,11 +60,10 @@ export function WorkspaceProvider({
     api.workspaces.listMine,
     isAuthenticated ? {} : "skip",
   );
-  const createWorkspaceMutation = useMutation(api.workspaces.create);
+  const requestWorkspaceMutation = useMutation(api.workspaceCreationRequests.request);
   const [selectedWorkspaceId, setSelectedWorkspaceId] =
     useState<Id<"workspaces"> | null>(readStoredWorkspaceId);
   const [error, setError] = useState<string | null>(null);
-  const pendingCreatedWorkspaceId = useRef<Id<"workspaces"> | null>(null);
   const memberships = useMemo(
     () => (membershipsResult ?? []) as WorkspaceMembership[],
     [membershipsResult],
@@ -76,12 +74,6 @@ export function WorkspaceProvider({
     if (!isAuthenticated || membershipsResult === undefined) return;
 
     const available = membershipsResult as WorkspaceMembership[];
-    const pendingCreatedId = pendingCreatedWorkspaceId.current;
-    if (pendingCreatedId && !available.some((item) => item.workspaceId === pendingCreatedId)) {
-      return;
-    }
-    if (pendingCreatedId) pendingCreatedWorkspaceId.current = null;
-
     const savedWorkspaceId = readStoredWorkspaceId();
     const nextWorkspaceId =
       available.find((item) => item.workspaceId === selectedWorkspaceId)?.workspaceId ??
@@ -102,22 +94,18 @@ export function WorkspaceProvider({
     [memberships],
   );
 
-  const createWorkspace = useCallback(
+  const requestWorkspaceCreation = useCallback(
     async (name: string) => {
       setError(null);
       try {
-        const workspaceId = await createWorkspaceMutation({ name });
-        pendingCreatedWorkspaceId.current = workspaceId;
-        setSelectedWorkspaceId(workspaceId);
-        persistWorkspaceId(workspaceId);
-        return workspaceId;
+        return await requestWorkspaceMutation({ name });
       } catch (caughtError) {
         const message = errorMessage(caughtError);
         setError(message);
         throw caughtError;
       }
     },
-    [createWorkspaceMutation],
+    [requestWorkspaceMutation],
   );
 
   const selectionPending =
@@ -129,16 +117,16 @@ export function WorkspaceProvider({
   return (
     <WorkspaceContext.Provider
       value={{
-        selectedWorkspaceId:
-          memberships.some((item) => item.workspaceId === selectedWorkspaceId) ||
-          pendingCreatedWorkspaceId.current === selectedWorkspaceId
-            ? selectedWorkspaceId
-            : null,
+        selectedWorkspaceId: memberships.some(
+          (item) => item.workspaceId === selectedWorkspaceId,
+        )
+          ? selectedWorkspaceId
+          : null,
         memberships,
         loading: authLoading || !membershipsLoaded || selectionPending,
         error,
         selectWorkspace,
-        createWorkspace,
+        requestWorkspaceCreation,
       }}
     >
       {children}

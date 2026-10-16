@@ -53,7 +53,9 @@ export const findSubscriberByUsername = internalQuery({
   args: {
     workspaceId: v.id("workspaces"),
     username: v.string(),
-    connectionType: v.optional(v.union(v.literal("pppoe"), v.literal("hotspot"))),
+    connectionType: v.optional(
+      v.union(v.literal("pppoe"), v.literal("hotspot")),
+    ),
   },
   returns: v.union(
     v.object({
@@ -68,7 +70,11 @@ export const findSubscriberByUsername = internalQuery({
         v.literal("expired"),
         v.literal("pending"),
       ),
-      connectionType: v.union(v.literal("pppoe"), v.literal("hotspot"), v.literal("static")),
+      connectionType: v.union(
+        v.literal("pppoe"),
+        v.literal("hotspot"),
+        v.literal("static"),
+      ),
       ipAddress: v.optional(v.string()),
       packageId: v.optional(v.id("packages")),
     }),
@@ -80,14 +86,18 @@ export const findSubscriberByUsername = internalQuery({
       matches = await ctx.db
         .query("subscribers")
         .withIndex("by_workspace_and_pppoe_username", (index) =>
-          index.eq("workspaceId", args.workspaceId).eq("pppoeUsername", args.username),
+          index
+            .eq("workspaceId", args.workspaceId)
+            .eq("pppoeUsername", args.username),
         )
         .take(2);
     } else if (args.connectionType === "hotspot") {
       matches = await ctx.db
         .query("subscribers")
         .withIndex("by_workspace_and_hotspot_username", (index) =>
-          index.eq("workspaceId", args.workspaceId).eq("hotspotUsername", args.username),
+          index
+            .eq("workspaceId", args.workspaceId)
+            .eq("hotspotUsername", args.username),
         )
         .take(2);
     } else {
@@ -95,13 +105,17 @@ export const findSubscriberByUsername = internalQuery({
         ctx.db
           .query("subscribers")
           .withIndex("by_workspace_and_pppoe_username", (index) =>
-            index.eq("workspaceId", args.workspaceId).eq("pppoeUsername", args.username),
+            index
+              .eq("workspaceId", args.workspaceId)
+              .eq("pppoeUsername", args.username),
           )
           .first(),
         ctx.db
           .query("subscribers")
           .withIndex("by_workspace_and_hotspot_username", (index) =>
-            index.eq("workspaceId", args.workspaceId).eq("hotspotUsername", args.username),
+            index
+              .eq("workspaceId", args.workspaceId)
+              .eq("hotspotUsername", args.username),
           )
           .first(),
       ]);
@@ -117,17 +131,18 @@ export const findSubscriberByUsername = internalQuery({
     const [subscriber] = matches;
     const connectionType = subscriber.connectionType;
     if (connectionType !== "pppoe" && connectionType !== "hotspot") return null;
-    const username = connectionType === "pppoe"
-      ? subscriber.pppoeUsername
-      : subscriber.hotspotUsername;
+    const username =
+      connectionType === "pppoe"
+        ? subscriber.pppoeUsername
+        : subscriber.hotspotUsername;
     const passwordCiphertext =
       connectionType === "pppoe"
         ? subscriber.pppoePasswordCiphertext
         : subscriber.hotspotPasswordCiphertext;
     const passwordIv =
       connectionType === "pppoe"
-      ? subscriber.pppoePasswordIv
-      : subscriber.hotspotPasswordIv;
+        ? subscriber.pppoePasswordIv
+        : subscriber.hotspotPasswordIv;
     if (!username) return null;
     return {
       _id: subscriber._id,
@@ -137,8 +152,12 @@ export const findSubscriberByUsername = internalQuery({
       ...(passwordCiphertext === undefined ? {} : { passwordCiphertext }),
       ...(passwordIv === undefined ? {} : { passwordIv }),
       status: subscriber.status,
-      ...(subscriber.ipAddress === undefined ? {} : { ipAddress: subscriber.ipAddress }),
-      ...(subscriber.packageId === undefined ? {} : { packageId: subscriber.packageId }),
+      ...(subscriber.ipAddress === undefined
+        ? {}
+        : { ipAddress: subscriber.ipAddress }),
+      ...(subscriber.packageId === undefined
+        ? {}
+        : { packageId: subscriber.packageId }),
     };
   },
 });
@@ -161,7 +180,9 @@ export const findRouterByNas = internalQuery({
     if (!args.nasIdentifier) return null;
     const candidates = await ctx.db
       .query("routers")
-      .withIndex("by_nas_identifier", (index) => index.eq("nasIdentifier", args.nasIdentifier!))
+      .withIndex("by_nas_identifier", (index) =>
+        index.eq("nasIdentifier", args.nasIdentifier!),
+      )
       .take(100);
     if (candidates.length === 100) return null;
     const matches = candidates.filter(
@@ -176,8 +197,12 @@ export const findRouterByNas = internalQuery({
       ? {
           _id: router._id,
           workspaceId: router.workspaceId!,
-          ...(router.tunnelIp === undefined ? {} : { tunnelIp: router.tunnelIp }),
-          ...(router.ipAddress === undefined ? {} : { ipAddress: router.ipAddress }),
+          ...(router.tunnelIp === undefined
+            ? {}
+            : { tunnelIp: router.tunnelIp }),
+          ...(router.ipAddress === undefined
+            ? {}
+            : { ipAddress: router.ipAddress }),
         }
       : null;
   },
@@ -196,7 +221,16 @@ export const getRouterForRadius = internalQuery({
   returns: v.union(v.object({ workspaceId: v.id("workspaces") }), v.null()),
   handler: async (ctx, args): Promise<RadiusRouterWorkspace | null> => {
     const router = await ctx.db.get(args.routerId);
-    return router?.workspaceId ? { workspaceId: router.workspaceId } : null;
+    if (!router?.workspaceId) return null;
+    const workspace = await ctx.db.get(router.workspaceId);
+    if (
+      !workspace ||
+      (workspace.platformStatus ?? "active") !== "active" ||
+      (workspace.expiresAt !== undefined && workspace.expiresAt <= Date.now())
+    ) {
+      return null;
+    }
+    return { workspaceId: router.workspaceId };
   },
 });
 
@@ -205,7 +239,9 @@ export const authorizeSubscriber = internalAction({
     routerId: v.id("routers"),
     username: v.string(),
     password: v.string(),
-    connectionType: v.optional(v.union(v.literal("pppoe"), v.literal("hotspot"))),
+    connectionType: v.optional(
+      v.union(v.literal("pppoe"), v.literal("hotspot")),
+    ),
   },
   returns: authorizationResult,
   handler: async (ctx, args): Promise<SubscriberAuthorization> => {
@@ -223,14 +259,18 @@ export const authorizeSubscriber = internalAction({
       {
         workspaceId: router.workspaceId,
         username: args.username,
-        ...(args.connectionType === undefined ? {} : { connectionType: args.connectionType }),
+        ...(args.connectionType === undefined
+          ? {}
+          : { connectionType: args.connectionType }),
       },
     );
     if (
       !subscriber ||
       subscriber.status !== "active" ||
-      (subscriber.connectionType !== "pppoe" && subscriber.connectionType !== "hotspot") ||
-      (args.connectionType !== undefined && subscriber.connectionType !== args.connectionType) ||
+      (subscriber.connectionType !== "pppoe" &&
+        subscriber.connectionType !== "hotspot") ||
+      (args.connectionType !== undefined &&
+        subscriber.connectionType !== args.connectionType) ||
       !subscriber.passwordCiphertext ||
       !subscriber.passwordIv ||
       !subscriber.packageId
@@ -271,7 +311,9 @@ export const authorizeSubscriber = internalAction({
       username: subscriber.username,
       downloadMbps: pkg.downloadSpeed,
       uploadMbps: pkg.uploadSpeed,
-      ...(subscriber.ipAddress === undefined ? {} : { framedIpAddress: subscriber.ipAddress }),
+      ...(subscriber.ipAddress === undefined
+        ? {}
+        : { framedIpAddress: subscriber.ipAddress }),
     };
   },
 });

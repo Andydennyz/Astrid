@@ -1,5 +1,7 @@
 import { useState, type FormEvent } from "react";
+import { useQuery } from "convex/react";
 import { BriefcaseBusiness, LoaderCircle } from "lucide-react";
+import { api } from "@/convex/_generated/api.js";
 import type { Id } from "@/convex/_generated/dataModel.js";
 import { Button } from "@/components/ui/button.tsx";
 import { Input } from "@/components/ui/input.tsx";
@@ -47,7 +49,9 @@ export function WorkspacePicker() {
 }
 
 export function WorkspaceEmptyState() {
-  const { createWorkspace, error } = useWorkspace();
+  const { requestWorkspaceCreation, error } = useWorkspace();
+  const requests = useQuery(api.workspaceCreationRequests.listMine, {});
+  const hasPendingRequest = requests?.some((request) => request.status === "pending") ?? false;
   const [name, setName] = useState("");
   const [isCreating, setIsCreating] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -57,7 +61,7 @@ export function WorkspaceEmptyState() {
     setIsCreating(true);
     setFormError(null);
     try {
-      await createWorkspace(name);
+      await requestWorkspaceCreation(name);
       setName("");
     } catch (caughtError) {
       setFormError(
@@ -77,12 +81,25 @@ export function WorkspaceEmptyState() {
           <BriefcaseBusiness className="size-5" />
         </div>
         <h2 className="text-xl font-semibold text-foreground">
-          Create your workspace
+          Request a workspace
         </h2>
         <p className="mt-2 text-sm leading-6 text-muted-foreground">
           A workspace keeps your subscribers, network, billing, and reports
-          together. Create one to get started.
+          together. Submit a request and the platform owner must approve it before the workspace is created.
         </p>
+        {requests && requests.length > 0 && (
+          <div className="mt-5 space-y-2" aria-live="polite">
+            {requests.map((request) => (
+              <div
+                key={request.requestId}
+                className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm"
+              >
+                <span className="font-medium">{request.name}</span>
+                <span className="ml-2 capitalize text-muted-foreground">{request.status}</span>
+              </div>
+            ))}
+          </div>
+        )}
         <form onSubmit={handleSubmit} className="mt-6 space-y-3">
           <label htmlFor="workspace-name" className="text-sm font-medium">
             Workspace name
@@ -104,9 +121,9 @@ export function WorkspaceEmptyState() {
               {formError || error}
             </p>
           )}
-          <Button type="submit" disabled={isCreating} className="w-full">
+          <Button type="submit" disabled={isCreating || hasPendingRequest} className="w-full">
             {isCreating && <LoaderCircle className="mr-2 size-4 animate-spin" />}
-            Create workspace
+            {hasPendingRequest ? "Request pending approval" : "Submit request"}
           </Button>
         </form>
       </div>

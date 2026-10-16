@@ -4,6 +4,7 @@ import { convexTest } from "convex-test";
 import { describe, expect, it } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
+import { createWorkspaceFixture } from "../src/test/workspace-fixtures";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -15,9 +16,7 @@ async function setupBillingRecords(t: ReturnType<typeof convexTest>) {
     email: "billing-owner@example.test",
     name: "Billing Owner",
   });
-  const workspaceId = await owner.mutation(api.workspaces.create, {
-    name: "Billing workspace",
-  });
+  const workspaceId = await createWorkspaceFixture(t, owner, "Billing workspace");
   const subscriberId = await owner.mutation(api.subscribers.create, {
     workspaceId,
     name: "Billing subscriber",

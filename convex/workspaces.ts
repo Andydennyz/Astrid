@@ -1,6 +1,7 @@
 import { ConvexError, v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import { requireWorkspaceRole } from "./model/workspace";
+import { requirePlatformAdmin } from "./platformAdmin";
 
 const workspaceRoleValidator = v.union(
   v.literal("owner"),
@@ -22,12 +23,17 @@ export const listMine = query({
   handler: async (ctx) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
-      throw new ConvexError({ code: "UNAUTHENTICATED", message: "Authentication required" });
+      throw new ConvexError({
+        code: "UNAUTHENTICATED",
+        message: "Authentication required",
+      });
     }
 
     const user = await ctx.db
       .query("users")
-      .withIndex("by_token", (q) => q.eq("tokenIdentifier", identity.tokenIdentifier))
+      .withIndex("by_token", (q) =>
+        q.eq("tokenIdentifier", identity.tokenIdentifier),
+      )
       .unique();
     if (!user) return [];
 
@@ -38,7 +44,13 @@ export const listMine = query({
     const workspaces = await Promise.all(
       memberships.map(async (membership) => {
         const workspace = await ctx.db.get(membership.workspaceId);
-        return workspace
+        return workspace &&
+          (workspace.platformStatus ?? "active") === "active" &&
+          !(membership.platformAccessSuspended ?? false) &&
+          !(
+            workspace.expiresAt !== undefined &&
+            workspace.expiresAt <= Date.now()
+          )
           ? {
               workspaceId: workspace._id,
               name: workspace.name,
@@ -57,8 +69,12 @@ export const create = mutation({
   handler: async (ctx, args) => {
     const identity = await ctx.auth.getUserIdentity();
     if (!identity) {
-      throw new ConvexError({ code: "UNAUTHENTICATED", message: "Authentication required" });
+      throw new ConvexError({
+        code: "UNAUTHENTICATED",
+        message: "Authentication required",
+      });
     }
+    requirePlatformAdmin(identity?.tokenIdentifier, identity?.email);
 
     const name = args.name.trim();
     if (name.length < 2 || name.length > 80) {
@@ -70,7 +86,9 @@ export const create = mutation({
 
     let user = await ctx.db
       .query("users")
-      .withIndex("by_token", (q) => q.eq("tokenIdentifier", identity.tokenIdentifier))
+      .withIndex("by_token", (q) =>
+        q.eq("tokenIdentifier", identity.tokenIdentifier),
+      )
       .unique();
     if (!user) {
       const userId = await ctx.db.insert("users", {
@@ -79,7 +97,8 @@ export const create = mutation({
         email: identity.email,
       });
       user = await ctx.db.get(userId);
-      if (!user) throw new Error("Failed to initialize the authenticated user profile");
+      if (!user)
+        throw new Error("Failed to initialize the authenticated user profile");
     }
 
     const now = new Date().toISOString();
@@ -87,6 +106,7 @@ export const create = mutation({
       name,
       createdBy: user._id,
       createdAt: now,
+      platformStatus: "active",
     });
     await ctx.db.insert("workspace_members", {
       workspaceId,

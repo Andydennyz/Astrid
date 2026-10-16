@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { encryptSubscriberPassword } from "./subscriberCredentials";
+import { createWorkspaceFixture } from "../src/test/workspace-fixtures";
 
 const modules = import.meta.glob("./**/*.ts");
 const testEncryptionKey = btoa(
@@ -37,9 +38,7 @@ function authenticatedTestUser(t: ReturnType<typeof convexTest>) {
 
 async function setupPppoe(t: ReturnType<typeof convexTest>) {
   const owner = authenticatedTestUser(t);
-  const workspaceId = await owner.mutation(api.workspaces.create, {
-    name: "RADIUS workspace",
-  });
+  const workspaceId = await createWorkspaceFixture(t, owner, "RADIUS workspace");
   const packageId = await owner.mutation(api.packages.create, {
     workspaceId,
     name: "PPPoE 20",
@@ -83,9 +82,7 @@ async function setupPppoe(t: ReturnType<typeof convexTest>) {
 
 async function setupHotspot(t: ReturnType<typeof convexTest>) {
   const owner = authenticatedTestUser(t);
-  const workspaceId = await owner.mutation(api.workspaces.create, {
-    name: "Hotspot RADIUS workspace",
-  });
+  const workspaceId = await createWorkspaceFixture(t, owner, "Hotspot RADIUS workspace");
   const packageId = await owner.mutation(api.packages.create, {
     workspaceId,
     name: "Hotspot 10",
@@ -195,9 +192,7 @@ describe("PPPoE RADIUS authorization", () => {
   it("creates the onboarding subscriber and initial invoice atomically", async () => {
     const t = convexTest(schema, modules);
     const owner = authenticatedTestUser(t);
-    const workspaceId = await owner.mutation(api.workspaces.create, {
-      name: "Initial invoice workspace",
-    });
+    const workspaceId = await createWorkspaceFixture(t, owner, "Initial invoice workspace");
     const packageId = await owner.mutation(api.packages.create, {
       workspaceId,
       name: "PPPoE 5",
@@ -433,9 +428,7 @@ describe("PPPoE RADIUS authorization", () => {
   it("rejects credentials when the subscriber belongs to a different workspace", async () => {
     const t = convexTest(schema, modules);
     const { owner, routerId, packageId } = await setupPppoe(t);
-    const otherWorkspaceId = await owner.mutation(api.workspaces.create, {
-      name: "Other workspace",
-    });
+    const otherWorkspaceId = await createWorkspaceFixture(t, owner, "Other workspace");
     const foreignCredential = await encryptSubscriberPassword(
       "temporary-test-password",
       testEncryptionKey,

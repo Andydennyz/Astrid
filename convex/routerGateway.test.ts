@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
+import { createWorkspaceFixture } from "../src/test/workspace-fixtures";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -22,12 +23,8 @@ describe("Router gateway operations", () => {
   it("scopes gateway tokens to a workspace and leases API-SSL checks without exposing secrets", async () => {
     const t = convexTest(schema, modules);
     const owner = authenticatedTestUser(t);
-    const workspaceId = await owner.mutation(api.workspaces.create, {
-      name: "Gateway workspace",
-    });
-    const otherWorkspaceId = await owner.mutation(api.workspaces.create, {
-      name: "Other gateway workspace",
-    });
+    const workspaceId = await createWorkspaceFixture(t, owner, "Gateway workspace");
+    const otherWorkspaceId = await createWorkspaceFixture(t, owner, "Other gateway workspace");
     const routerId: Id<"routers"> = await t.run(async (ctx) =>
       ctx.db.insert("routers", {
         workspaceId,
@@ -173,9 +170,7 @@ describe("Router gateway operations", () => {
   it("rejects credential rotation from read-only members", async () => {
     const t = convexTest(schema, modules);
     const owner = authenticatedTestUser(t);
-    const workspaceId = await owner.mutation(api.workspaces.create, {
-      name: "Read-only gateway workspace",
-    });
+    const workspaceId = await createWorkspaceFixture(t, owner, "Read-only gateway workspace");
     const reader = t.withIdentity({
       issuer: "https://issuer.example.test",
       subject: "gateway-reader",

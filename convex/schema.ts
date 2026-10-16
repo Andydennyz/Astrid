@@ -6,7 +6,9 @@ export default defineSchema({
     tokenIdentifier: v.string(),
     name: v.optional(v.string()),
     email: v.optional(v.string()),
-    role: v.optional(v.union(v.literal("admin"), v.literal("staff"), v.literal("operator"))),
+    role: v.optional(
+      v.union(v.literal("admin"), v.literal("staff"), v.literal("operator")),
+    ),
     avatar: v.optional(v.string()),
     companyName: v.optional(v.string()),
   }).index("by_token", ["tokenIdentifier"]),
@@ -15,6 +17,18 @@ export default defineSchema({
     name: v.string(),
     createdBy: v.id("users"),
     createdAt: v.string(),
+    platformStatus: v.optional(
+      v.union(
+        v.literal("active"),
+        v.literal("suspended"),
+        v.literal("archived"),
+        v.literal("expired"),
+        v.literal("deleting"),
+      ),
+    ),
+    platformStatusUpdatedAt: v.optional(v.string()),
+    expiresAt: v.optional(v.number()),
+    deletionPending: v.optional(v.boolean()),
   }).index("by_creator", ["createdBy"]),
 
   workspace_members: defineTable({
@@ -28,6 +42,7 @@ export default defineSchema({
       v.literal("read_only"),
     ),
     joinedAt: v.string(),
+    platformAccessSuspended: v.optional(v.boolean()),
   })
     .index("by_user", ["userId"])
     .index("by_workspace", ["workspaceId"])
@@ -45,12 +60,35 @@ export default defineSchema({
     tokenHash: v.string(),
     invitedBy: v.id("users"),
     expiresAt: v.number(),
-    status: v.union(v.literal("pending"), v.literal("accepted"), v.literal("revoked")),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("accepted"),
+      v.literal("revoked"),
+    ),
     createdAt: v.string(),
   })
     .index("by_token_hash", ["tokenHash"])
+    .index("by_workspace", ["workspaceId"])
     .index("by_workspace_and_email", ["workspaceId", "email"])
     .index("by_workspace_and_status", ["workspaceId", "status"]),
+
+  workspace_creation_requests: defineTable({
+    requesterUserId: v.id("users"),
+    name: v.string(),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("approved"),
+      v.literal("rejected"),
+    ),
+    createdAt: v.string(),
+    reviewedAt: v.optional(v.string()),
+    reviewedBy: v.optional(v.id("users")),
+    workspaceId: v.optional(v.id("workspaces")),
+  })
+    .index("by_workspace", ["workspaceId"])
+    .index("by_requester", ["requesterUserId"])
+    .index("by_requester_and_status", ["requesterUserId", "status"])
+    .index("by_status_and_created_at", ["status", "createdAt"]),
 
   subscribers: defineTable({
     workspaceId: v.id("workspaces"),
@@ -93,19 +131,29 @@ export default defineSchema({
     .index("by_is_online", ["isOnline"])
     .index("by_workspace", ["workspaceId"])
     .index("by_workspace_and_status", ["workspaceId", "status"])
-    .index("by_workspace_and_connection_type", ["workspaceId", "connectionType"])
+    .index("by_workspace_and_connection_type", [
+      "workspaceId",
+      "connectionType",
+    ])
     .index("by_workspace_and_package", ["workspaceId", "packageId"])
     .index("by_pppoe_username", ["pppoeUsername"])
     .index("by_workspace_and_pppoe_username", ["workspaceId", "pppoeUsername"])
     .index("by_hotspot_username", ["hotspotUsername"])
-    .index("by_workspace_and_hotspot_username", ["workspaceId", "hotspotUsername"]),
+    .index("by_workspace_and_hotspot_username", [
+      "workspaceId",
+      "hotspotUsername",
+    ]),
 
   packages: defineTable({
     workspaceId: v.id("workspaces"),
     name: v.string(),
     speed: v.string(),
     price: v.number(),
-    type: v.union(v.literal("pppoe"), v.literal("hotspot"), v.literal("static")),
+    type: v.union(
+      v.literal("pppoe"),
+      v.literal("hotspot"),
+      v.literal("static"),
+    ),
     description: v.optional(v.string()),
     isActive: v.boolean(),
     downloadSpeed: v.number(),
@@ -141,8 +189,16 @@ export default defineSchema({
     .index("by_workspace_and_subscriber", ["workspaceId", "subscriberId"])
     .index("by_workspace_and_status", ["workspaceId", "status"])
     .index("by_workspace_and_due_date", ["workspaceId", "dueDate"])
-    .index("by_workspace_and_subscriber_and_status", ["workspaceId", "subscriberId", "status"])
-    .index("by_workspace_and_status_and_due_date", ["workspaceId", "status", "dueDate"]),
+    .index("by_workspace_and_subscriber_and_status", [
+      "workspaceId",
+      "subscriberId",
+      "status",
+    ])
+    .index("by_workspace_and_status_and_due_date", [
+      "workspaceId",
+      "status",
+      "dueDate",
+    ]),
 
   transactions: defineTable({
     workspaceId: v.id("workspaces"),
@@ -163,7 +219,11 @@ export default defineSchema({
       v.literal("paypal"),
     ),
     reference: v.optional(v.string()),
-    status: v.union(v.literal("completed"), v.literal("pending"), v.literal("failed")),
+    status: v.union(
+      v.literal("completed"),
+      v.literal("pending"),
+      v.literal("failed"),
+    ),
     notes: v.optional(v.string()),
     createdAt: v.string(),
   })
@@ -211,7 +271,11 @@ export default defineSchema({
     workspaceId: v.id("workspaces"),
     recipient: v.string(),
     message: v.string(),
-    status: v.union(v.literal("sent"), v.literal("failed"), v.literal("pending")),
+    status: v.union(
+      v.literal("sent"),
+      v.literal("failed"),
+      v.literal("pending"),
+    ),
     type: v.union(
       v.literal("invoice"),
       v.literal("reminder"),
@@ -249,6 +313,32 @@ export default defineSchema({
     .index("by_workspace_and_user", ["workspaceId", "userId"])
     .index("by_workspace_and_user_and_read", ["workspaceId", "userId", "read"]),
 
+  account_alerts: defineTable({
+    userTokenIdentifier: v.string(),
+    workspaceId: v.optional(v.id("workspaces")),
+    workspaceName: v.string(),
+    title: v.string(),
+    message: v.string(),
+    type: v.union(
+      v.literal("info"),
+      v.literal("success"),
+      v.literal("warning"),
+      v.literal("error"),
+    ),
+    read: v.boolean(),
+    createdAt: v.string(),
+  })
+    .index("by_user", ["userTokenIdentifier"])
+    .index("by_user_and_read", ["userTokenIdentifier", "read"])
+    .index("by_workspace", ["workspaceId"]),
+
+  workspace_deletion_jobs: defineTable({
+    workspaceId: v.id("workspaces"),
+    startedBy: v.string(),
+    tableIndex: v.number(),
+    createdAt: v.string(),
+  }).index("by_workspace", ["workspaceId"]),
+
   audit_logs: defineTable({
     workspaceId: v.optional(v.id("workspaces")),
     userId: v.string(),
@@ -273,12 +363,17 @@ export default defineSchema({
       v.literal("other"),
     ),
     ipAddress: v.string(),
-    status: v.union(v.literal("online"), v.literal("offline"), v.literal("maintenance")),
+    status: v.union(
+      v.literal("online"),
+      v.literal("offline"),
+      v.literal("maintenance"),
+    ),
     location: v.optional(v.string()),
     lastSeen: v.optional(v.string()),
     notes: v.optional(v.string()),
     createdAt: v.string(),
-  }).index("by_status", ["status"])
+  })
+    .index("by_status", ["status"])
     .index("by_workspace", ["workspaceId"])
     .index("by_workspace_and_status", ["workspaceId", "status"]),
 
@@ -292,23 +387,27 @@ export default defineSchema({
     privateKey: v.optional(v.string()),
     presharedKey: v.optional(v.string()),
     // Addressing
-    tunnelIp: v.optional(v.string()),        // e.g. 10.200.0.2/32 — peer tunnel IP
+    tunnelIp: v.optional(v.string()), // e.g. 10.200.0.2/32 — peer tunnel IP
     serverPublicKey: v.optional(v.string()), // billing-server WireGuard public key
-    serverEndpoint: v.optional(v.string()),  // e.g. billing.example.com:51820
-    serverTunnelIp: v.optional(v.string()),  // e.g. 10.200.0.1/32
-    allowedIPs: v.optional(v.string()),      // e.g. 0.0.0.0/0 or specific subnets
+    serverEndpoint: v.optional(v.string()), // e.g. billing.example.com:51820
+    serverTunnelIp: v.optional(v.string()), // e.g. 10.200.0.1/32
+    allowedIPs: v.optional(v.string()), // e.g. 0.0.0.0/0 or specific subnets
     dns: v.optional(v.string()),
     // Device info
     ipAddress: v.optional(v.string()), // LAN IP of router
     location: v.optional(v.string()),
-    model: v.optional(v.string()),     // e.g. RB750Gr3
-    status: v.union(v.literal("online"), v.literal("offline"), v.literal("unknown")),
+    model: v.optional(v.string()), // e.g. RB750Gr3
+    status: v.union(
+      v.literal("online"),
+      v.literal("offline"),
+      v.literal("unknown"),
+    ),
     lastSeen: v.optional(v.string()),
     notes: v.optional(v.string()),
     // RADIUS / billing link
     radiusSecret: v.optional(v.string()),
     radiusSecretHash: v.optional(v.string()),
-    nasIdentifier: v.string(),  // NAS-Identifier sent by this router
+    nasIdentifier: v.string(), // NAS-Identifier sent by this router
     // RouterOS version — drives provisioning script syntax
     routerOsVersion: v.optional(v.union(v.literal("v6"), v.literal("v7"))),
     createdAt: v.string(),
@@ -318,7 +417,10 @@ export default defineSchema({
     .index("by_nas_identifier", ["nasIdentifier"])
     .index("by_workspace", ["workspaceId"])
     .index("by_workspace_and_name", ["workspaceId", "name"])
-    .index("by_workspace_and_normalized_name", ["workspaceId", "normalizedName"])
+    .index("by_workspace_and_normalized_name", [
+      "workspaceId",
+      "normalizedName",
+    ])
     .index("by_workspace_and_status", ["workspaceId", "status"])
     .index("by_workspace_and_nas_identifier", ["workspaceId", "nasIdentifier"]),
 
@@ -337,6 +439,7 @@ export default defineSchema({
     createdAt: v.string(),
     operatorAppliedAt: v.optional(v.string()),
   })
+    .index("by_workspace", ["workspaceId"])
     .index("by_workspace_and_router", ["workspaceId", "routerId"])
     .index("by_workspace_and_status", ["workspaceId", "status"]),
 
@@ -367,9 +470,22 @@ export default defineSchema({
     completedAt: v.optional(v.string()),
     detail: v.optional(v.string()),
   })
-    .index("by_workspace_and_router_and_created_at", ["workspaceId", "routerId", "createdAt"])
-    .index("by_workspace_and_setup_and_status", ["workspaceId", "setupId", "status"])
-    .index("by_workspace_and_status_and_created_at", ["workspaceId", "status", "createdAt"])
+    .index("by_workspace", ["workspaceId"])
+    .index("by_workspace_and_router_and_created_at", [
+      "workspaceId",
+      "routerId",
+      "createdAt",
+    ])
+    .index("by_workspace_and_setup_and_status", [
+      "workspaceId",
+      "setupId",
+      "status",
+    ])
+    .index("by_workspace_and_status_and_created_at", [
+      "workspaceId",
+      "status",
+      "createdAt",
+    ])
     .index("by_workspace_and_status_and_lease_expiry", [
       "workspaceId",
       "status",
@@ -422,16 +538,24 @@ export default defineSchema({
     // timing
     startTime: v.string(),
     stopTime: v.optional(v.string()),
-    sessionTime: v.optional(v.number()),     // seconds
+    sessionTime: v.optional(v.number()), // seconds
     // traffic
     inputOctets: v.optional(v.number()),
     outputOctets: v.optional(v.number()),
     inputGigawords: v.optional(v.number()),
     outputGigawords: v.optional(v.number()),
     // status
-    status: v.union(v.literal("active"), v.literal("stopped"), v.literal("interim")),
+    status: v.union(
+      v.literal("active"),
+      v.literal("stopped"),
+      v.literal("interim"),
+    ),
     terminateCause: v.optional(v.string()),
-    connectionType: v.union(v.literal("pppoe"), v.literal("hotspot"), v.literal("static")),
+    connectionType: v.union(
+      v.literal("pppoe"),
+      v.literal("hotspot"),
+      v.literal("static"),
+    ),
     createdAt: v.string(),
   })
     .index("by_router", ["routerId"])
@@ -441,8 +565,16 @@ export default defineSchema({
     .index("by_status", ["status"])
     .index("by_workspace", ["workspaceId"])
     .index("by_workspace_and_router", ["workspaceId", "routerId"])
-    .index("by_workspace_and_router_and_status", ["workspaceId", "routerId", "status"])
-    .index("by_workspace_and_router_and_session_id", ["workspaceId", "routerId", "sessionId"])
+    .index("by_workspace_and_router_and_status", [
+      "workspaceId",
+      "routerId",
+      "status",
+    ])
+    .index("by_workspace_and_router_and_session_id", [
+      "workspaceId",
+      "routerId",
+      "sessionId",
+    ])
     .index("by_workspace_and_session_id", ["workspaceId", "sessionId"])
     .index("by_workspace_and_status", ["workspaceId", "status"])
     .index("by_workspace_and_start_time", ["workspaceId", "startTime"]),
@@ -451,12 +583,20 @@ export default defineSchema({
   radius_logs: defineTable({
     workspaceId: v.id("workspaces"),
     routerId: v.optional(v.id("routers")),
-    type: v.union(v.literal("authorize"), v.literal("authenticate"), v.literal("accounting")),
+    type: v.union(
+      v.literal("authorize"),
+      v.literal("authenticate"),
+      v.literal("accounting"),
+    ),
     username: v.string(),
     nasIdentifier: v.optional(v.string()),
     nasIpAddress: v.optional(v.string()),
-    requestAttrs: v.optional(v.string()),  // JSON string
-    responseCode: v.union(v.literal("accept"), v.literal("reject"), v.literal("error")),
+    requestAttrs: v.optional(v.string()), // JSON string
+    responseCode: v.union(
+      v.literal("accept"),
+      v.literal("reject"),
+      v.literal("error"),
+    ),
     responseAttrs: v.optional(v.string()), // JSON string
     rejectReason: v.optional(v.string()),
     createdAt: v.string(),
@@ -466,6 +606,10 @@ export default defineSchema({
     .index("by_type", ["type"])
     .index("by_workspace", ["workspaceId"])
     .index("by_workspace_and_type", ["workspaceId", "type"])
-    .index("by_workspace_and_type_and_response_code", ["workspaceId", "type", "responseCode"])
+    .index("by_workspace_and_type_and_response_code", [
+      "workspaceId",
+      "type",
+      "responseCode",
+    ])
     .index("by_workspace_and_created_at", ["workspaceId", "createdAt"]),
 });

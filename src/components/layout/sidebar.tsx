@@ -21,8 +21,11 @@ import {
   Router as RouterIcon,
   Activity,
   ShieldCheck,
+  Building2,
 } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth.ts";
+import { useQuery } from "convex/react";
+import { api } from "@/convex/_generated/api.js";
 
 type NavItem = {
   icon: React.ComponentType<{ className?: string; size?: number }>;
@@ -58,6 +61,10 @@ type SidebarProps = {
 export default function Sidebar({ open, onClose }: SidebarProps) {
   const location = useLocation();
   const { user } = useAuth();
+  const isPlatformOwner = useQuery(api.platformAdmin.isCurrentPlatformOwner, {});
+  const visibleNavItems: NavItem[] = isPlatformOwner
+    ? [...navItems, { icon: Building2, label: "Tenants", href: "/platform/tenants" }]
+    : navItems;
 
   return (
     <>
@@ -102,7 +109,7 @@ export default function Sidebar({ open, onClose }: SidebarProps) {
 
         {/* Navigation */}
         <nav className="flex-1 overflow-y-auto py-4 px-3 space-y-0.5">
-          {navItems.map((item) => {
+          {visibleNavItems.map((item) => {
             const isActive =
               item.href === "/dashboard"
                 ? location.pathname === "/dashboard" || location.pathname === "/"

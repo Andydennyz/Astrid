@@ -4,6 +4,7 @@ import { convexTest } from "convex-test";
 import { describe, expect, it } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
+import { createWorkspaceFixture } from "../src/test/workspace-fixtures";
 
 const modules = import.meta.glob("./**/*.ts");
 
@@ -26,8 +27,8 @@ describe("workspace tenant boundaries", () => {
     const t = convexTest(schema, modules);
     const ownerA = authenticatedTestUser(t, "owner-a", "owner-a@example.test");
     const ownerB = authenticatedTestUser(t, "owner-b", "owner-b@example.test");
-    const workspaceA = await ownerA.mutation(api.workspaces.create, { name: "Network A" });
-    const workspaceB = await ownerB.mutation(api.workspaces.create, { name: "Network B" });
+    const workspaceA = await createWorkspaceFixture(t, ownerA, "Network A");
+    const workspaceB = await createWorkspaceFixture(t, ownerB, "Network B");
     await expect(
       t.query(api.packages.listActive, { workspaceId: workspaceA }),
     ).rejects.toThrow();
@@ -74,7 +75,7 @@ describe("workspace tenant boundaries", () => {
     const t = convexTest(schema, modules);
     const owner = authenticatedTestUser(t, "owner", "owner@example.test");
     const reader = authenticatedTestUser(t, "reader", "reader@example.test");
-    const workspaceId = await owner.mutation(api.workspaces.create, { name: "Read-only test" });
+    const workspaceId = await createWorkspaceFixture(t, owner, "Read-only test");
     await owner.mutation(api.packages.create, {
       workspaceId,
       name: "Home 20",
@@ -115,7 +116,7 @@ describe("workspace tenant boundaries", () => {
   it("does not return router credentials from client-facing queries", async () => {
     const t = convexTest(schema, modules);
     const owner = authenticatedTestUser(t, "router-owner", "router-owner@example.test");
-    const workspaceId = await owner.mutation(api.workspaces.create, { name: "Router security" });
+    const workspaceId = await createWorkspaceFixture(t, owner, "Router security");
     await t.run(async (ctx) => {
       await ctx.db.insert("routers", {
         workspaceId,
@@ -147,7 +148,7 @@ describe("workspace tenant boundaries", () => {
     const owner = authenticatedTestUser(t, "invite-owner", "owner@example.test");
     const invitedUser = authenticatedTestUser(t, "invitee", "staff@example.test");
     const wrongUser = authenticatedTestUser(t, "wrong-user", "other@example.test");
-    const workspaceId = await owner.mutation(api.workspaces.create, { name: "Invited workspace" });
+    const workspaceId = await createWorkspaceFixture(t, owner, "Invited workspace");
     const invitation = await owner.action(api.workspaceInvitationsActions.create, {
       workspaceId,
       email: " Staff@Example.Test ",

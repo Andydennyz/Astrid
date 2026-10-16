@@ -1,9 +1,14 @@
 import { v } from "convex/values";
 import { internalMutation, mutation, query } from "./_generated/server";
 import { ConvexError } from "convex/values";
+import type { Doc } from "./_generated/dataModel";
 import { requireWorkspaceRole } from "./model/workspace";
 
-const routerStatus = v.union(v.literal("online"), v.literal("offline"), v.literal("unknown"));
+const routerStatus = v.union(
+  v.literal("online"),
+  v.literal("offline"),
+  v.literal("unknown"),
+);
 const publicRouter = v.object({
   _id: v.id("routers"),
   _creationTime: v.number(),
@@ -28,6 +33,41 @@ const publicRouter = v.object({
 });
 const readableRoles = ["owner", "admin", "network", "read_only"] as const;
 
+function toPublicRouter(router: Doc<"routers">) {
+  return {
+    _id: router._id,
+    _creationTime: router._creationTime,
+    workspaceId: router.workspaceId,
+    name: router.name,
+    publicKey: router.publicKey,
+    ...(router.tunnelIp === undefined ? {} : { tunnelIp: router.tunnelIp }),
+    ...(router.serverPublicKey === undefined
+      ? {}
+      : { serverPublicKey: router.serverPublicKey }),
+    ...(router.serverEndpoint === undefined
+      ? {}
+      : { serverEndpoint: router.serverEndpoint }),
+    ...(router.serverTunnelIp === undefined
+      ? {}
+      : { serverTunnelIp: router.serverTunnelIp }),
+    ...(router.allowedIPs === undefined
+      ? {}
+      : { allowedIPs: router.allowedIPs }),
+    ...(router.dns === undefined ? {} : { dns: router.dns }),
+    ...(router.ipAddress === undefined ? {} : { ipAddress: router.ipAddress }),
+    ...(router.location === undefined ? {} : { location: router.location }),
+    ...(router.model === undefined ? {} : { model: router.model }),
+    status: router.status,
+    ...(router.lastSeen === undefined ? {} : { lastSeen: router.lastSeen }),
+    ...(router.notes === undefined ? {} : { notes: router.notes }),
+    nasIdentifier: router.nasIdentifier,
+    ...(router.routerOsVersion === undefined
+      ? {}
+      : { routerOsVersion: router.routerOsVersion }),
+    createdAt: router.createdAt,
+  };
+}
+
 export const list = query({
   args: { workspaceId: v.id("workspaces") },
   returns: v.array(publicRouter),
@@ -35,17 +75,11 @@ export const list = query({
     await requireWorkspaceRole(ctx, args.workspaceId, readableRoles);
     const routers = await ctx.db
       .query("routers")
-      .withIndex("by_workspace", (index) => index.eq("workspaceId", args.workspaceId))
+      .withIndex("by_workspace", (index) =>
+        index.eq("workspaceId", args.workspaceId),
+      )
       .take(500);
-    return routers.map(
-      ({
-        privateKey: _privateKey,
-        presharedKey: _presharedKey,
-        radiusSecret: _radiusSecret,
-        radiusSecretHash: _radiusSecretHash,
-        ...router
-      }) => router,
-    );
+    return routers.map(toPublicRouter);
   },
 });
 
@@ -56,14 +90,7 @@ export const getById = query({
     await requireWorkspaceRole(ctx, args.workspaceId, readableRoles);
     const router = await ctx.db.get(args.id);
     if (!router || router.workspaceId !== args.workspaceId) return null;
-    const {
-      privateKey: _privateKey,
-      presharedKey: _presharedKey,
-      radiusSecret: _radiusSecret,
-      radiusSecretHash: _radiusSecretHash,
-      ...safeRouter
-    } = router;
-    return safeRouter;
+    return toPublicRouter(router);
   },
 });
 
@@ -95,7 +122,9 @@ export const getStats = query({
       ctx.db
         .query("router_sessions")
         .withIndex("by_workspace_and_router", (index) =>
-          index.eq("workspaceId", args.workspaceId).eq("routerId", args.routerId),
+          index
+            .eq("workspaceId", args.workspaceId)
+            .eq("routerId", args.routerId),
         )
         .order("desc")
         .take(100),
@@ -104,9 +133,11 @@ export const getStats = query({
     let totalUploadBytes = 0;
     for (const session of recent) {
       totalDownloadBytes +=
-        (session.inputOctets ?? 0) + (session.inputGigawords ?? 0) * 4_294_967_296;
+        (session.inputOctets ?? 0) +
+        (session.inputGigawords ?? 0) * 4_294_967_296;
       totalUploadBytes +=
-        (session.outputOctets ?? 0) + (session.outputGigawords ?? 0) * 4_294_967_296;
+        (session.outputOctets ?? 0) +
+        (session.outputGigawords ?? 0) * 4_294_967_296;
     }
     return {
       activeSessions: Math.min(active.length, 1000),
@@ -138,7 +169,11 @@ export const update = mutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    await requireWorkspaceRole(ctx, args.workspaceId, ["owner", "admin", "network"]);
+    await requireWorkspaceRole(ctx, args.workspaceId, [
+      "owner",
+      "admin",
+      "network",
+    ]);
     const router = await ctx.db.get(args.id);
     if (!router || router.workspaceId !== args.workspaceId) {
       throw new ConvexError("Router does not belong to this workspace");
@@ -147,11 +182,15 @@ export const update = mutation({
       const existing = await ctx.db
         .query("routers")
         .withIndex("by_workspace_and_nas_identifier", (index) =>
-          index.eq("workspaceId", args.workspaceId).eq("nasIdentifier", args.nasIdentifier!),
+          index
+            .eq("workspaceId", args.workspaceId)
+            .eq("nasIdentifier", args.nasIdentifier!),
         )
         .first();
       if (existing && existing._id !== args.id) {
-        throw new ConvexError("NAS Identifier already exists in this workspace");
+        throw new ConvexError(
+          "NAS Identifier already exists in this workspace",
+        );
       }
     }
     const {
@@ -194,7 +233,11 @@ export const remove = mutation({
   args: { workspaceId: v.id("workspaces"), id: v.id("routers") },
   returns: v.null(),
   handler: async (ctx, args) => {
-    await requireWorkspaceRole(ctx, args.workspaceId, ["owner", "admin", "network"]);
+    await requireWorkspaceRole(ctx, args.workspaceId, [
+      "owner",
+      "admin",
+      "network",
+    ]);
     const router = await ctx.db.get(args.id);
     if (!router || router.workspaceId !== args.workspaceId) {
       throw new ConvexError("Router does not belong to this workspace");
@@ -216,7 +259,10 @@ export const updateLastSeen = internalMutation({
     if (!router || router.workspaceId !== args.workspaceId) {
       throw new ConvexError("Router does not belong to this workspace");
     }
-    await ctx.db.patch(args.id, { lastSeen: new Date().toISOString(), status: args.status });
+    await ctx.db.patch(args.id, {
+      lastSeen: new Date().toISOString(),
+      status: args.status,
+    });
     return null;
   },
 });
@@ -245,11 +291,14 @@ const publicManagementSetup = v.object({
 
 function isIpv4Address(value: string) {
   const octets = value.split(".");
-  return octets.length === 4 && octets.every((octet) => {
-    if (!/^(0|[1-9]\d{0,2})$/.test(octet)) return false;
-    const number = Number(octet);
-    return number <= 255;
-  });
+  return (
+    octets.length === 4 &&
+    octets.every((octet) => {
+      if (!/^(0|[1-9]\d{0,2})$/.test(octet)) return false;
+      const number = Number(octet);
+      return number <= 255;
+    })
+  );
 }
 
 export const listManagementSetups = query({
@@ -286,11 +335,11 @@ export const recordManagementSetup = mutation({
   },
   returns: v.id("router_management_setups"),
   handler: async (ctx, args) => {
-    const { user } = await requireWorkspaceRole(
-      ctx,
-      args.workspaceId,
-      ["owner", "admin", "network"],
-    );
+    const { user } = await requireWorkspaceRole(ctx, args.workspaceId, [
+      "owner",
+      "admin",
+      "network",
+    ]);
     const router = await ctx.db.get(args.routerId);
     if (!router || router.workspaceId !== args.workspaceId) {
       throw new ConvexError("Router does not belong to this workspace");
@@ -300,13 +349,17 @@ export const recordManagementSetup = mutation({
       !isIpv4Address(args.gatewaySourceAddress) ||
       args.managementAddress === args.gatewaySourceAddress
     ) {
-      throw new ConvexError("Enter distinct valid IPv4 addresses for router and gateway");
+      throw new ConvexError(
+        "Enter distinct valid IPv4 addresses for router and gateway",
+      );
     }
     if (!/^astrid-api-[a-f0-9]{12}$/.test(args.apiUsername)) {
       throw new ConvexError("Generated management username is invalid");
     }
     if (!/^[A-Za-z0-9_.-]{1,64}$/.test(args.certificateName)) {
-      throw new ConvexError("Certificate name must use 1-64 letters, digits, dots, dashes, or underscores");
+      throw new ConvexError(
+        "Certificate name must use 1-64 letters, digits, dots, dashes, or underscores",
+      );
     }
     if (!/^[a-f0-9]{64}$/.test(args.scriptSha256)) {
       throw new ConvexError("Router setup script fingerprint is invalid");
@@ -336,10 +389,16 @@ export const markManagementSetupApplied = mutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    await requireWorkspaceRole(ctx, args.workspaceId, ["owner", "admin", "network"]);
+    await requireWorkspaceRole(ctx, args.workspaceId, [
+      "owner",
+      "admin",
+      "network",
+    ]);
     const setup = await ctx.db.get(args.setupId);
     if (!setup || setup.workspaceId !== args.workspaceId) {
-      throw new ConvexError("Router management setup does not belong to this workspace");
+      throw new ConvexError(
+        "Router management setup does not belong to this workspace",
+      );
     }
     const router = await ctx.db.get(setup.routerId);
     if (!router || router.workspaceId !== args.workspaceId) {

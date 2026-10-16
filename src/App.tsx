@@ -24,6 +24,7 @@ import ReportsPage from "./pages/reports/page.tsx";
 import RoutersPage from "./pages/routers/page.tsx";
 import SessionsPage from "./pages/sessions/page.tsx";
 import RadiusLogsPage from "./pages/radius-logs/page.tsx";
+import PlatformTenantsPage from "./pages/platform-tenants/page.tsx";
 
 export default function App() {
   return (
@@ -56,6 +57,7 @@ export default function App() {
             <Route path="/routers" element={<RoutersPage />} />
             <Route path="/sessions" element={<SessionsPage />} />
             <Route path="/radius-logs" element={<RadiusLogsPage />} />
+            <Route path="/platform/tenants" element={<PlatformTenantsPage />} />
           </Route>
 
           {/* 404 */}

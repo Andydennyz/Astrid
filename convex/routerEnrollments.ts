@@ -40,7 +40,10 @@ function validateMetadata(name: string, location?: string, model?: string) {
     normalizedName.length > 100 ||
     hasControlCharacters(normalizedName)
   ) {
-    throw new ConvexError({ code: "INVALID_NAME", message: "Router name must be 1-100 characters" });
+    throw new ConvexError({
+      code: "INVALID_NAME",
+      message: "Router name must be 1-100 characters",
+    });
   }
   for (const [fieldName, value, maximumLength] of [
     ["location", location, 200],
@@ -62,7 +65,9 @@ function validateMetadata(name: string, location?: string, model?: string) {
 }
 
 function toHex(bytes: Uint8Array) {
-  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
+    "",
+  );
 }
 
 export const create = action({
@@ -82,7 +87,10 @@ export const create = action({
     const name = validateMetadata(args.name, args.location, args.model);
     const randomTokenBytes = crypto.getRandomValues(new Uint8Array(32));
     const token = toHex(randomTokenBytes);
-    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+    const digest = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(token),
+    );
     const tokenHash = toHex(new Uint8Array(digest));
     const expiresAt = Date.now() + enrollmentLifetimeMs;
     const enrollmentId: Id<"router_enrollments"> = await ctx.runMutation(
@@ -90,7 +98,9 @@ export const create = action({
       {
         workspaceId: args.workspaceId,
         name,
-        ...(args.location === undefined ? {} : { location: args.location.trim() }),
+        ...(args.location === undefined
+          ? {}
+          : { location: args.location.trim() }),
         ...(args.model === undefined ? {} : { model: args.model.trim() }),
         routerOsVersion: args.routerOsVersion,
         tokenHash,
@@ -115,7 +125,10 @@ export const redeem = action({
   }),
   handler: async (ctx, args) => {
     if (!/^[a-f0-9]{64}$/i.test(args.token)) {
-      throw new ConvexError({ code: "INVALID_TOKEN", message: "Enrollment token is invalid" });
+      throw new ConvexError({
+        code: "INVALID_TOKEN",
+        message: "Enrollment token is invalid",
+      });
     }
     if (!/^[a-f0-9]{64}$/.test(args.radiusSecret)) {
       throw new ConvexError({
@@ -123,7 +136,10 @@ export const redeem = action({
         message: "Generated RADIUS secret is invalid",
       });
     }
-    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(args.token));
+    const digest = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(args.token),
+    );
     const tokenHash = toHex(new Uint8Array(digest));
     const secretDigest = await crypto.subtle.digest(
       "SHA-256",
@@ -156,7 +172,9 @@ export const list = query({
     await requireWorkspaceRole(ctx, args.workspaceId, managerRoles);
     const enrollments = await ctx.db
       .query("router_enrollments")
-      .withIndex("by_workspace", (index) => index.eq("workspaceId", args.workspaceId))
+      .withIndex("by_workspace", (index) =>
+        index.eq("workspaceId", args.workspaceId),
+      )
       .order("desc")
       .take(100);
     return enrollments.map(
@@ -197,13 +215,49 @@ export const revoke = mutation({
     await requireWorkspaceRole(ctx, args.workspaceId, managerRoles);
     const enrollment = await ctx.db.get(args.enrollmentId);
     if (!enrollment || enrollment.workspaceId !== args.workspaceId) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Enrollment not found" });
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Enrollment not found",
+      });
     }
     if (enrollment.status === "pending") {
       await ctx.db.patch(args.enrollmentId, {
         status: enrollment.expiresAt <= Date.now() ? "expired" : "revoked",
       });
     }
+    return null;
+  },
+});
+
+export const remove = mutation({
+  args: {
+    workspaceId: v.id("workspaces"),
+    enrollmentId: v.id("router_enrollments"),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await requireWorkspaceRole(ctx, args.workspaceId, managerRoles);
+    const enrollment = await ctx.db.get(args.enrollmentId);
+    if (!enrollment || enrollment.workspaceId !== args.workspaceId) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Enrollment not found",
+      });
+    }
+    if (enrollment.status === "redeemed" || enrollment.routerId !== undefined) {
+      throw new ConvexError({
+        code: "ENROLLMENT_REDEEMED",
+        message:
+          "A redeemed enrollment cannot be removed; delete the router instead",
+      });
+    }
+    if (enrollment.status === "pending" && enrollment.expiresAt > Date.now()) {
+      throw new ConvexError({
+        code: "ENROLLMENT_ACTIVE",
+        message: "Revoke the active enrollment before removing it",
+      });
+    }
+    await ctx.db.delete(enrollment._id);
     return null;
   },
 });
@@ -220,31 +274,49 @@ export const createInternal = internalMutation({
   },
   returns: v.id("router_enrollments"),
   handler: async (ctx, args) => {
-    const { user } = await requireWorkspaceRole(ctx, args.workspaceId, managerRoles);
-    const normalizedName = validateMetadata(args.name, args.location, args.model);
+    const { user } = await requireWorkspaceRole(
+      ctx,
+      args.workspaceId,
+      managerRoles,
+    );
+    const normalizedName = validateMetadata(
+      args.name,
+      args.location,
+      args.model,
+    );
     if (!/^[a-f0-9]{64}$/.test(args.tokenHash)) {
-      throw new ConvexError({ code: "INVALID_TOKEN_HASH", message: "Enrollment token hash is invalid" });
+      throw new ConvexError({
+        code: "INVALID_TOKEN_HASH",
+        message: "Enrollment token hash is invalid",
+      });
     }
 
     const now = Date.now();
-    if (
-      args.expiresAt <= now ||
-      args.expiresAt > now + enrollmentLifetimeMs
-    ) {
-      throw new ConvexError({ code: "INVALID_EXPIRY", message: "Enrollment expiry is invalid" });
+    if (args.expiresAt <= now || args.expiresAt > now + enrollmentLifetimeMs) {
+      throw new ConvexError({
+        code: "INVALID_EXPIRY",
+        message: "Enrollment expiry is invalid",
+      });
     }
 
     const duplicateHash = await ctx.db
       .query("router_enrollments")
-      .withIndex("by_token_hash", (index) => index.eq("tokenHash", args.tokenHash))
+      .withIndex("by_token_hash", (index) =>
+        index.eq("tokenHash", args.tokenHash),
+      )
       .unique();
     if (duplicateHash) {
-      throw new ConvexError({ code: "DUPLICATE_TOKEN", message: "Enrollment token has already been used" });
+      throw new ConvexError({
+        code: "DUPLICATE_TOKEN",
+        message: "Enrollment token has already been used",
+      });
     }
     const existingRouter = await ctx.db
       .query("routers")
       .withIndex("by_workspace_and_normalized_name", (index) =>
-        index.eq("workspaceId", args.workspaceId).eq("normalizedName", normalizedName.toLowerCase()),
+        index
+          .eq("workspaceId", args.workspaceId)
+          .eq("normalizedName", normalizedName.toLowerCase()),
       )
       .first();
     const exactLegacyRouter = await ctx.db
@@ -256,7 +328,8 @@ export const createInternal = internalMutation({
     if (existingRouter || exactLegacyRouter) {
       throw new ConvexError({
         code: "ROUTER_ALREADY_EXISTS",
-        message: "A router with this name is already registered in this workspace",
+        message:
+          "A router with this name is already registered in this workspace",
       });
     }
 
@@ -295,7 +368,9 @@ export const createInternal = internalMutation({
       workspaceId: args.workspaceId,
       name: normalizedName,
       normalizedName: normalizedName.toLowerCase(),
-      ...(args.location === undefined ? {} : { location: args.location.trim() }),
+      ...(args.location === undefined
+        ? {}
+        : { location: args.location.trim() }),
       ...(args.model === undefined ? {} : { model: args.model.trim() }),
       routerOsVersion: args.routerOsVersion,
       tokenHash: args.tokenHash,
@@ -304,7 +379,11 @@ export const createInternal = internalMutation({
       createdAt: new Date().toISOString(),
       createdBy: user._id,
     });
-    await ctx.scheduler.runAt(args.expiresAt, internal.routerEnrollments.expire, { enrollmentId });
+    await ctx.scheduler.runAt(
+      args.expiresAt,
+      internal.routerEnrollments.expire,
+      { enrollmentId },
+    );
     return enrollmentId;
   },
 });
@@ -322,12 +401,16 @@ export const redeemInternal = internalMutation({
   handler: async (ctx, args) => {
     await requireWorkspaceRole(ctx, args.workspaceId, managerRoles);
     if (!/^[a-f0-9]{64}$/.test(args.tokenHash)) {
-      throw new ConvexError({ code: "INVALID_TOKEN_HASH", message: "Enrollment token is invalid" });
+      throw new ConvexError({
+        code: "INVALID_TOKEN_HASH",
+        message: "Enrollment token is invalid",
+      });
     }
     if (!/^[A-Za-z0-9+/]{43}=$/.test(args.routerPublicKey)) {
       throw new ConvexError({
         code: "INVALID_PUBLIC_KEY",
-        message: "Enter the WireGuard public key generated by the RouterOS v7 device",
+        message:
+          "Enter the WireGuard public key generated by the RouterOS v7 device",
       });
     }
     if (!/^[a-f0-9]{64}$/.test(args.radiusSecretHash)) {
@@ -352,10 +435,15 @@ export const redeemInternal = internalMutation({
     }
     const matchingToken = await ctx.db
       .query("router_enrollments")
-      .withIndex("by_token_hash", (index) => index.eq("tokenHash", args.tokenHash))
+      .withIndex("by_token_hash", (index) =>
+        index.eq("tokenHash", args.tokenHash),
+      )
       .unique();
     if (!matchingToken || matchingToken._id !== enrollment._id) {
-      throw new ConvexError({ code: "INVALID_TOKEN", message: "Enrollment token is invalid" });
+      throw new ConvexError({
+        code: "INVALID_TOKEN",
+        message: "Enrollment token is invalid",
+      });
     }
     if (enrollment.status === "redeemed" && enrollment.routerId) {
       const router = await ctx.db.get(enrollment.routerId);
@@ -379,7 +467,10 @@ export const redeemInternal = internalMutation({
       });
     }
     if (enrollment.expiresAt <= Date.now()) {
-      throw new ConvexError({ code: "ENROLLMENT_EXPIRED", message: "Enrollment token has expired" });
+      throw new ConvexError({
+        code: "ENROLLMENT_EXPIRED",
+        message: "Enrollment token has expired",
+      });
     }
 
     const existingKey = await ctx.db
@@ -390,7 +481,9 @@ export const redeemInternal = internalMutation({
       .first();
     const existingRouterKey = await ctx.db
       .query("routers")
-      .withIndex("by_public_key", (index) => index.eq("publicKey", args.routerPublicKey))
+      .withIndex("by_public_key", (index) =>
+        index.eq("publicKey", args.routerPublicKey),
+      )
       .first();
     if (existingKey || existingRouterKey) {
       throw new ConvexError({
@@ -400,7 +493,9 @@ export const redeemInternal = internalMutation({
     }
     const existingNasIdentifier = await ctx.db
       .query("routers")
-      .withIndex("by_nas_identifier", (index) => index.eq("nasIdentifier", args.nasIdentifier))
+      .withIndex("by_nas_identifier", (index) =>
+        index.eq("nasIdentifier", args.nasIdentifier),
+      )
       .first();
     if (existingNasIdentifier) {
       throw new ConvexError({
@@ -414,7 +509,9 @@ export const redeemInternal = internalMutation({
       name: enrollment.name,
       normalizedName: enrollment.normalizedName,
       publicKey: args.routerPublicKey,
-      ...(enrollment.location === undefined ? {} : { location: enrollment.location }),
+      ...(enrollment.location === undefined
+        ? {}
+        : { location: enrollment.location }),
       ...(enrollment.model === undefined ? {} : { model: enrollment.model }),
       status: "unknown",
       radiusSecretHash: args.radiusSecretHash,
@@ -437,7 +534,10 @@ export const expire = internalMutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const enrollment = await ctx.db.get(args.enrollmentId);
-    if (enrollment?.status === "pending" && enrollment.expiresAt <= Date.now()) {
+    if (
+      enrollment?.status === "pending" &&
+      enrollment.expiresAt <= Date.now()
+    ) {
       await ctx.db.patch(args.enrollmentId, { status: "expired" });
     }
     return null;

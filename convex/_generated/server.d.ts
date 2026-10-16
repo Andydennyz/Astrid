@@ -30,6 +30,7 @@ import type { DataModel } from "./dataModel.js";
 type Env = {
   readonly CONVEX_CLOUD_URL: string;
   readonly CONVEX_SITE_URL: string;
+  readonly PLATFORM_ADMIN_TOKEN_IDENTIFIERS: string | undefined;
   readonly PPPOE_CREDENTIAL_ENCRYPTION_KEY: string | undefined;
   readonly RADIUS_GATEWAY_TOKEN: string | undefined;
 };

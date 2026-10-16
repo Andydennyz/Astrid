@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { toast } from "sonner";
-import { Copy, LoaderCircle, Plus, X } from "lucide-react";
+import { Copy, LoaderCircle, Plus, Trash2, X } from "lucide-react";
 import { api } from "@/convex/_generated/api.js";
 import type { Id } from "@/convex/_generated/dataModel.js";
 import { useWorkspace } from "@/components/providers/workspace.tsx";
@@ -17,6 +17,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog.tsx";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog.tsx";
 import {
   buildRouterEnrollmentRollbackScript,
   buildRouterEnrollmentScript,
@@ -39,7 +49,9 @@ export default function RouterEnrollment({
   onOpenChange,
 }: RouterEnrollmentProps) {
   const { selectedWorkspaceId: workspaceId, memberships } = useWorkspace();
-  const membership = memberships.find((item) => item.workspaceId === workspaceId);
+  const membership = memberships.find(
+    (item) => item.workspaceId === workspaceId,
+  );
   const canManage =
     membership?.role === "owner" ||
     membership?.role === "admin" ||
@@ -51,16 +63,20 @@ export default function RouterEnrollment({
   const createEnrollment = useAction(api.routerEnrollments.create);
   const redeemEnrollment = useAction(api.routerEnrollments.redeem);
   const revokeEnrollment = useMutation(api.routerEnrollments.revoke);
+  const removeEnrollment = useMutation(api.routerEnrollments.remove);
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
   const open = controlledOpen ?? uncontrolledOpen;
   const [name, setName] = useState("");
   const [location, setLocation] = useState("");
   const [model, setModel] = useState("");
-  const [enrollmentId, setEnrollmentId] = useState<Id<"router_enrollments"> | null>(null);
+  const [enrollmentId, setEnrollmentId] =
+    useState<Id<"router_enrollments"> | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [expiresAt, setExpiresAt] = useState<number | null>(null);
   const [routerPublicKey, setRouterPublicKey] = useState("");
-  const [pendingRadiusSecret, setPendingRadiusSecret] = useState<string | null>(null);
+  const [pendingRadiusSecret, setPendingRadiusSecret] = useState<string | null>(
+    null,
+  );
   const [issuedCredentials, setIssuedCredentials] = useState<{
     nasIdentifier: string;
     radiusSecret: string;
@@ -71,23 +87,37 @@ export default function RouterEnrollment({
     ppp: true,
     hotspot: true,
   });
-  const [routerRadiusScript, setRouterRadiusScript] = useState<string | null>(null);
-  const [freeRadiusClientConfig, setFreeRadiusClientConfig] = useState<string | null>(null);
+  const [routerRadiusScript, setRouterRadiusScript] = useState<string | null>(
+    null,
+  );
+  const [freeRadiusClientConfig, setFreeRadiusClientConfig] = useState<
+    string | null
+  >(null);
   const [pppoeInterface, setPppoeInterface] = useState("");
   const [pppoeLocalAddress, setPppoeLocalAddress] = useState("");
   const [pppoePoolStart, setPppoePoolStart] = useState("");
   const [pppoePoolEnd, setPppoePoolEnd] = useState("");
   const [pppoeServiceName, setPppoeServiceName] = useState("astrid-pppoe");
-  const [pppoeServiceScript, setPppoeServiceScript] = useState<string | null>(null);
+  const [pppoeServiceScript, setPppoeServiceScript] = useState<string | null>(
+    null,
+  );
   const [hotspotInterface, setHotspotInterface] = useState("");
   const [hotspotAddress, setHotspotAddress] = useState("");
   const [hotspotPoolStart, setHotspotPoolStart] = useState("");
   const [hotspotPoolEnd, setHotspotPoolEnd] = useState("");
   const [hotspotDnsName, setHotspotDnsName] = useState("");
   const [hotspotCertificateName, setHotspotCertificateName] = useState("");
-  const [hotspotServiceScript, setHotspotServiceScript] = useState<string | null>(null);
+  const [hotspotServiceScript, setHotspotServiceScript] = useState<
+    string | null
+  >(null);
   const [redeemed, setRedeemed] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [redeemError, setRedeemError] = useState<string | null>(null);
+  const [removalTarget, setRemovalTarget] = useState<{
+    id: Id<"router_enrollments">;
+    name: string;
+  } | null>(null);
+  const [removingEnrollment, setRemovingEnrollment] = useState(false);
 
   if (!canManage || !workspaceId) return null;
 
@@ -97,7 +127,9 @@ export default function RouterEnrollment({
     if (!nextOpen) {
       if (token && enrollmentId && !redeemed) {
         void revokeEnrollment({ workspaceId, enrollmentId }).catch(() => {
-          toast.error("Could not revoke the unused token; it will expire automatically.");
+          toast.error(
+            "Could not revoke the unused token; it will expire automatically.",
+          );
         });
       }
       setToken(null);
@@ -125,6 +157,7 @@ export default function RouterEnrollment({
       setHotspotCertificateName("");
       setHotspotServiceScript(null);
       setRedeemed(false);
+      setRedeemError(null);
     }
   };
 
@@ -148,7 +181,11 @@ export default function RouterEnrollment({
       setExpiresAt(result.expiresAt);
       toast.success("Router enrollment token created.");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not create router enrollment.");
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Could not create router enrollment.",
+      );
     } finally {
       setSubmitting(false);
     }
@@ -159,13 +196,16 @@ export default function RouterEnrollment({
       await navigator.clipboard.writeText(value);
       toast.success(`${label} copied.`);
     } catch {
-      toast.error(`Could not copy ${label.toLowerCase()}. Select and copy it manually.`);
+      toast.error(
+        `Could not copy ${label.toLowerCase()}. Select and copy it manually.`,
+      );
     }
   };
 
   const redeem = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!workspaceId || !enrollmentId || !token) return;
+    setRedeemError(null);
     setSubmitting(true);
     try {
       const radiusSecret =
@@ -191,7 +231,12 @@ export default function RouterEnrollment({
       setRedeemed(true);
       toast.success("Router public key bound to this enrollment.");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not complete enrollment.");
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Could not complete enrollment. Check the key and try again.";
+      setRedeemError(message);
+      toast.error(message);
     } finally {
       setSubmitting(false);
     }
@@ -202,7 +247,28 @@ export default function RouterEnrollment({
       await revokeEnrollment({ workspaceId, enrollmentId });
       toast.success("Enrollment revoked.");
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not revoke enrollment.");
+      toast.error(
+        error instanceof Error ? error.message : "Could not revoke enrollment.",
+      );
+    }
+  };
+
+  const remove = async () => {
+    if (!removalTarget) return;
+    setRemovingEnrollment(true);
+    try {
+      await removeEnrollment({
+        workspaceId,
+        enrollmentId: removalTarget.id,
+      });
+      toast.success("Enrollment removed.");
+      setRemovalTarget(null);
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not remove enrollment.",
+      );
+    } finally {
+      setRemovingEnrollment(false);
     }
   };
 
@@ -226,7 +292,11 @@ export default function RouterEnrollment({
         }),
       );
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not generate RADIUS configuration.");
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Could not generate RADIUS configuration.",
+      );
     }
   };
 
@@ -242,7 +312,11 @@ export default function RouterEnrollment({
         }),
       );
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not generate PPPoE configuration.");
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Could not generate PPPoE configuration.",
+      );
     }
   };
 
@@ -259,7 +333,11 @@ export default function RouterEnrollment({
         }),
       );
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not generate HotSpot configuration.");
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Could not generate HotSpot configuration.",
+      );
     }
   };
 
@@ -268,10 +346,13 @@ export default function RouterEnrollment({
       <section className="space-y-4 rounded-xl border border-border bg-card p-4 md:p-5">
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-base font-semibold">Secure router enrollment</h2>
+            <h2 className="text-base font-semibold">
+              Secure router enrollment
+            </h2>
             <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-              Create a short-lived enrollment token before a router is configured. Tokens expire
-              after 30 minutes and are only shown once.
+              Create a short-lived enrollment token before a router is
+              configured. Tokens expire after 30 minutes and are only shown
+              once.
             </p>
           </div>
           <Button onClick={() => setDialogOpen(true)}>
@@ -283,9 +364,10 @@ export default function RouterEnrollment({
         <Alert>
           <AlertTitle>Safe staged enrollment</AlertTitle>
           <AlertDescription>
-            This flow binds a RouterOS-generated public key to a short-lived enrollment. It does not
-            configure a WireGuard peer, tunnel address, RADIUS, or remote API access; those require
-            the later gateway and server setup. Never share the enrollment token or put it in the
+            This flow binds a RouterOS-generated public key to a short-lived
+            enrollment. It does not configure a WireGuard peer, tunnel address,
+            RADIUS, or remote API access; those require the later gateway and
+            server setup. Never share the enrollment token or put it in the
             router terminal.
           </AlertDescription>
         </Alert>
@@ -293,9 +375,13 @@ export default function RouterEnrollment({
         <div className="space-y-3">
           <h3 className="text-sm font-medium">Recent enrollments</h3>
           {enrollments === undefined ? (
-            <p className="text-sm text-muted-foreground">Loading enrollments…</p>
+            <p className="text-sm text-muted-foreground">
+              Loading enrollments…
+            </p>
           ) : enrollments.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No router enrollments yet.</p>
+            <p className="text-sm text-muted-foreground">
+              No router enrollments yet.
+            </p>
           ) : (
             <div className="divide-y divide-border rounded-lg border border-border">
               {enrollments.map((enrollment) => (
@@ -306,28 +392,51 @@ export default function RouterEnrollment({
                   <div>
                     <p className="text-sm font-medium">{enrollment.name}</p>
                     <p className="text-xs text-muted-foreground">
-                      {[enrollment.model, enrollment.location, `RouterOS ${enrollment.routerOsVersion}`]
+                      {[
+                        enrollment.model,
+                        enrollment.location,
+                        `RouterOS ${enrollment.routerOsVersion}`,
+                      ]
                         .filter(Boolean)
                         .join(" · ")}
                       {" · "}
                       {enrollment.status === "pending"
                         ? `Expires ${new Date(enrollment.expiresAt).toLocaleString()}`
                         : enrollment.status === "redeemed"
-                          ? "public key bound"
+                          ? "enrolled · router added"
                           : enrollment.status}
                     </p>
                   </div>
-                  {enrollment.status === "pending" && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      aria-label={`Revoke enrollment for ${enrollment.name}`}
-                      onClick={() => void revoke(enrollment._id)}
-                    >
-                      <X className="mr-1 size-4" />
-                      Revoke
-                    </Button>
-                  )}
+                  <div className="flex items-center gap-2">
+                    {enrollment.status === "pending" && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        aria-label={`Revoke enrollment for ${enrollment.name}`}
+                        onClick={() => void revoke(enrollment._id)}
+                      >
+                        <X className="mr-1 size-4" />
+                        Revoke
+                      </Button>
+                    )}
+                    {(enrollment.status === "expired" ||
+                      enrollment.status === "revoked") && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        aria-label={`Remove ${enrollment.status} enrollment for ${enrollment.name}`}
+                        onClick={() =>
+                          setRemovalTarget({
+                            id: enrollment._id,
+                            name: enrollment.name,
+                          })
+                        }
+                      >
+                        <Trash2 className="mr-1 size-4" />
+                        Remove
+                      </Button>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
@@ -335,8 +444,65 @@ export default function RouterEnrollment({
         </div>
       </section>
 
+      <AlertDialog
+        open={removalTarget !== null}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen && !removingEnrollment) setRemovalTarget(null);
+        }}
+      >
+        <AlertDialogContent className="border-border bg-card">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove enrollment?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Remove{" "}
+              <span className="font-medium text-foreground">
+                {removalTarget?.name}
+              </span>{" "}
+              from the recent enrollments list? This permanently removes this
+              expired or revoked enrollment record. It does not delete any
+              enrolled router.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              disabled={removingEnrollment}
+              className="border-border bg-transparent text-foreground hover:bg-muted/20"
+            >
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={removingEnrollment}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={(event) => {
+                event.preventDefault();
+                void remove();
+              }}
+            >
+              {removingEnrollment ? (
+                <LoaderCircle className="mr-2 size-4 animate-spin" />
+              ) : (
+                <Trash2 className="mr-2 size-4" />
+              )}
+              Remove enrollment
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <Dialog open={open} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-lg">
+        <DialogContent
+          className="max-h-[calc(100dvh-2rem)] max-w-lg overflow-y-auto overscroll-contain"
+          onInteractOutside={(event) => {
+            if ((token && !redeemed) || issuedCredentials) {
+              event.preventDefault();
+            }
+          }}
+          onEscapeKeyDown={(event) => {
+            if ((token && !redeemed) || issuedCredentials) {
+              event.preventDefault();
+            }
+          }}
+        >
           <DialogHeader>
             <DialogTitle>
               {redeemed
@@ -357,62 +523,89 @@ export default function RouterEnrollment({
           {redeemed ? (
             <div className="space-y-4">
               <Alert>
-                <AlertTitle>Enrollment recorded</AlertTitle>
+                <AlertTitle>Enrollment successful — router added</AlertTitle>
                 <AlertDescription>
-                  The router record and NAS identity are ready. Convex stores only the RADIUS
-                  secret hash. Configure the WireGuard tunnel first; the snippets below configure
-                  RADIUS and offer service scripts, but do not create a WireGuard peer or change
-                  interface addresses and firewall rules.
+                  The router record and NAS identity are ready. Convex stores
+                  only the RADIUS secret hash. Configure the WireGuard tunnel
+                  first; the snippets below configure RADIUS and offer service
+                  scripts, but do not create a WireGuard peer or change
+                  interface addresses and firewall rules. After closing this
+                  dialog, the router appears in the Routers section above.
                 </AlertDescription>
               </Alert>
               {issuedCredentials && (
                 <div className="space-y-3 rounded-md border border-border p-3">
                   <div>
-                    <p className="text-xs font-medium text-muted-foreground">NAS-Identifier</p>
-                    <p className="break-all font-mono text-sm">{issuedCredentials.nasIdentifier}</p>
+                    <p className="text-xs font-medium text-muted-foreground">
+                      NAS-Identifier
+                    </p>
+                    <p className="break-all font-mono text-sm">
+                      {issuedCredentials.nasIdentifier}
+                    </p>
                     <Button
                       type="button"
                       variant="secondary"
                       size="sm"
                       className="mt-2"
-                      onClick={() => void copyText(issuedCredentials.nasIdentifier, "NAS-Identifier")}
+                      onClick={() =>
+                        void copyText(
+                          issuedCredentials.nasIdentifier,
+                          "NAS-Identifier",
+                        )
+                      }
                     >
                       <Copy className="mr-2 size-4" />
                       Copy NAS-Identifier
                     </Button>
                   </div>
                   <div>
-                    <p className="text-xs font-medium text-muted-foreground">RADIUS shared secret</p>
-                    <p className="break-all font-mono text-sm">{issuedCredentials.radiusSecret}</p>
+                    <p className="text-xs font-medium text-muted-foreground">
+                      RADIUS shared secret
+                    </p>
+                    <p className="break-all font-mono text-sm">
+                      {issuedCredentials.radiusSecret}
+                    </p>
                     <Button
                       type="button"
                       variant="secondary"
                       size="sm"
                       className="mt-2"
-                      onClick={() => void copyText(issuedCredentials.radiusSecret, "RADIUS shared secret")}
+                      onClick={() =>
+                        void copyText(
+                          issuedCredentials.radiusSecret,
+                          "RADIUS shared secret",
+                        )
+                      }
                     >
                       <Copy className="mr-2 size-4" />
                       Copy RADIUS secret
                     </Button>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    Convex stores only a SHA-256 hash. If the request reports an error, retry before
-                    closing this dialog; the same secret will be used to safely complete redemption.
+                    Convex stores only a SHA-256 hash. If the request reports an
+                    error, retry before closing this dialog; the same secret
+                    will be used to safely complete redemption.
                   </p>
                 </div>
               )}
               {issuedCredentials && (
                 <div className="space-y-3 rounded-md border border-border p-3">
                   <div>
-                    <p className="text-sm font-medium">Prepare matching RADIUS configuration</p>
+                    <p className="text-sm font-medium">
+                      Prepare matching RADIUS configuration
+                    </p>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      Use the addresses assigned to this WireGuard link. The RouterOS script also
-                      sets its system identity to the registered NAS-Identifier. Applying it
-                      enables RADIUS on every existing HotSpot profile you select below.
+                      Use the addresses assigned to this WireGuard link. The
+                      RouterOS script also sets its system identity to the
+                      registered NAS-Identifier. Applying it enables RADIUS on
+                      every existing HotSpot profile you select below.
                     </p>
                   </div>
                   <div className="space-y-2">
-                    <label htmlFor="radius-server-address" className="text-sm font-medium">
+                    <label
+                      htmlFor="radius-server-address"
+                      className="text-sm font-medium"
+                    >
                       RADIUS server IPv4 address
                     </label>
                     <Input
@@ -429,7 +622,10 @@ export default function RouterEnrollment({
                     />
                   </div>
                   <div className="space-y-2">
-                    <label htmlFor="router-tunnel-address" className="text-sm font-medium">
+                    <label
+                      htmlFor="router-tunnel-address"
+                      className="text-sm font-medium"
+                    >
                       Router WireGuard IPv4 address
                     </label>
                     <Input
@@ -446,12 +642,19 @@ export default function RouterEnrollment({
                     />
                   </div>
                   <fieldset className="space-y-2">
-                    <legend className="text-sm font-medium">RADIUS services</legend>
-                    {([
-                      ["ppp", "PPP / PPPoE"],
-                      ["hotspot", "HotSpot"],
-                    ] as const).map(([service, label]) => (
-                      <label key={service} className="flex items-center gap-2 text-sm">
+                    <legend className="text-sm font-medium">
+                      RADIUS services
+                    </legend>
+                    {(
+                      [
+                        ["ppp", "PPP / PPPoE"],
+                        ["hotspot", "HotSpot"],
+                      ] as const
+                    ).map(([service, label]) => (
+                      <label
+                        key={service}
+                        className="flex items-center gap-2 text-sm"
+                      >
                         <Checkbox
                           checked={radiusServices[service]}
                           onCheckedChange={(checked) => {
@@ -471,7 +674,9 @@ export default function RouterEnrollment({
                     type="button"
                     variant="secondary"
                     className="w-full"
-                    disabled={!radiusServerAddress.trim() || !routerTunnelAddress.trim()}
+                    disabled={
+                      !radiusServerAddress.trim() || !routerTunnelAddress.trim()
+                    }
                     onClick={generateRadiusConfiguration}
                   >
                     Generate RADIUS configuration
@@ -479,7 +684,10 @@ export default function RouterEnrollment({
                   {routerRadiusScript && freeRadiusClientConfig && (
                     <div className="space-y-3 border-t border-border pt-3">
                       <div className="space-y-2">
-                        <label htmlFor="router-radius-script" className="text-sm font-medium">
+                        <label
+                          htmlFor="router-radius-script"
+                          className="text-sm font-medium"
+                        >
                           RouterOS script
                         </label>
                         <Textarea
@@ -492,14 +700,22 @@ export default function RouterEnrollment({
                           type="button"
                           variant="secondary"
                           className="w-full"
-                          onClick={() => void copyText(routerRadiusScript, "RouterOS RADIUS script")}
+                          onClick={() =>
+                            void copyText(
+                              routerRadiusScript,
+                              "RouterOS RADIUS script",
+                            )
+                          }
                         >
                           <Copy className="mr-2 size-4" />
                           Copy RouterOS script
                         </Button>
                       </div>
                       <div className="space-y-2">
-                        <label htmlFor="freeradius-client-config" className="text-sm font-medium">
+                        <label
+                          htmlFor="freeradius-client-config"
+                          className="text-sm font-medium"
+                        >
                           FreeRADIUS client block
                         </label>
                         <Textarea
@@ -513,7 +729,10 @@ export default function RouterEnrollment({
                           variant="secondary"
                           className="w-full"
                           onClick={() =>
-                            void copyText(freeRadiusClientConfig, "FreeRADIUS client block")
+                            void copyText(
+                              freeRadiusClientConfig,
+                              "FreeRADIUS client block",
+                            )
                           }
                         >
                           <Copy className="mr-2 size-4" />
@@ -523,9 +742,10 @@ export default function RouterEnrollment({
                       <Alert>
                         <AlertTitle>Keep these snippets private</AlertTitle>
                         <AlertDescription>
-                          Both configurations contain the RADIUS shared secret. Add the client
-                          block to FreeRADIUS, require Message-Authenticator, reload FreeRADIUS,
-                          then apply the RouterOS script over a trusted local session.
+                          Both configurations contain the RADIUS shared secret.
+                          Add the client block to FreeRADIUS, require
+                          Message-Authenticator, reload FreeRADIUS, then apply
+                          the RouterOS script over a trusted local session.
                         </AlertDescription>
                       </Alert>
                     </div>
@@ -533,16 +753,22 @@ export default function RouterEnrollment({
                   {radiusServices.ppp && (
                     <div className="space-y-3 border-t border-border pt-3">
                       <div>
-                        <p className="text-sm font-medium">Prepare PPPoE access concentrator</p>
+                        <p className="text-sm font-medium">
+                          Prepare PPPoE access concentrator
+                        </p>
                         <p className="mt-1 text-xs text-muted-foreground">
-                          Enter the customer-facing interface and an address plan reserved for PPP
-                          sessions. The script uses PAP so FreeRADIUS can verify subscriber
-                          credentials; RADIUS supplies each subscriber’s package rate.
+                          Enter the customer-facing interface and an address
+                          plan reserved for PPP sessions. The script uses PAP so
+                          FreeRADIUS can verify subscriber credentials; RADIUS
+                          supplies each subscriber’s package rate.
                         </p>
                       </div>
                       <div className="grid gap-3 sm:grid-cols-2">
                         <div className="space-y-2">
-                          <label htmlFor="pppoe-interface" className="text-sm font-medium">
+                          <label
+                            htmlFor="pppoe-interface"
+                            className="text-sm font-medium"
+                          >
                             PPPoE interface
                           </label>
                           <Input
@@ -558,7 +784,10 @@ export default function RouterEnrollment({
                           />
                         </div>
                         <div className="space-y-2">
-                          <label htmlFor="pppoe-service-name" className="text-sm font-medium">
+                          <label
+                            htmlFor="pppoe-service-name"
+                            className="text-sm font-medium"
+                          >
                             PPPoE service name
                           </label>
                           <Input
@@ -573,7 +802,10 @@ export default function RouterEnrollment({
                           />
                         </div>
                         <div className="space-y-2">
-                          <label htmlFor="pppoe-local-address" className="text-sm font-medium">
+                          <label
+                            htmlFor="pppoe-local-address"
+                            className="text-sm font-medium"
+                          >
                             PPP server local IPv4 address
                           </label>
                           <Input
@@ -589,7 +821,10 @@ export default function RouterEnrollment({
                           />
                         </div>
                         <div className="space-y-2">
-                          <label htmlFor="pppoe-pool-start" className="text-sm font-medium">
+                          <label
+                            htmlFor="pppoe-pool-start"
+                            className="text-sm font-medium"
+                          >
                             Client pool start IPv4
                           </label>
                           <Input
@@ -605,7 +840,10 @@ export default function RouterEnrollment({
                           />
                         </div>
                         <div className="space-y-2">
-                          <label htmlFor="pppoe-pool-end" className="text-sm font-medium">
+                          <label
+                            htmlFor="pppoe-pool-end"
+                            className="text-sm font-medium"
+                          >
                             Client pool end IPv4
                           </label>
                           <Input
@@ -637,7 +875,10 @@ export default function RouterEnrollment({
                       </Button>
                       {pppoeServiceScript && (
                         <div className="space-y-2">
-                          <label htmlFor="pppoe-service-script" className="text-sm font-medium">
+                          <label
+                            htmlFor="pppoe-service-script"
+                            className="text-sm font-medium"
+                          >
                             RouterOS PPPoE service script
                           </label>
                           <Textarea
@@ -650,7 +891,12 @@ export default function RouterEnrollment({
                             type="button"
                             variant="secondary"
                             className="w-full"
-                            onClick={() => void copyText(pppoeServiceScript, "PPPoE service script")}
+                            onClick={() =>
+                              void copyText(
+                                pppoeServiceScript,
+                                "PPPoE service script",
+                              )
+                            }
                           >
                             <Copy className="mr-2 size-4" />
                             Copy PPPoE service script
@@ -660,12 +906,14 @@ export default function RouterEnrollment({
                       <Alert>
                         <AlertTitle>Review before applying</AlertTitle>
                         <AlertDescription>
-                          This creates or updates only the marked Astrid PPPoE pool, profile, and
-                          server entry. It does not assign an IP address to the interface, add
-                          firewall/NAT rules, or change existing DHCP/bridge configuration. Apply
-                          from a trusted local RouterOS session after checking for address overlap.
-                          HotSpot network and portal setup is configured separately below; the
-                          RADIUS script also enables RADIUS on existing HotSpot profiles.
+                          This creates or updates only the marked Astrid PPPoE
+                          pool, profile, and server entry. It does not assign an
+                          IP address to the interface, add firewall/NAT rules,
+                          or change existing DHCP/bridge configuration. Apply
+                          from a trusted local RouterOS session after checking
+                          for address overlap. HotSpot network and portal setup
+                          is configured separately below; the RADIUS script also
+                          enables RADIUS on existing HotSpot profiles.
                         </AlertDescription>
                       </Alert>
                     </div>
@@ -673,16 +921,22 @@ export default function RouterEnrollment({
                   {radiusServices.hotspot && (
                     <div className="space-y-3 border-t border-border pt-3">
                       <div>
-                        <p className="text-sm font-medium">Prepare HotSpot access service</p>
+                        <p className="text-sm font-medium">
+                          Prepare HotSpot access service
+                        </p>
                         <p className="mt-1 text-xs text-muted-foreground">
-                          Use a dedicated customer-facing bridge or VLAN. The gateway address
-                          must already be assigned to that interface, and the matching trusted
-                          TLS certificate must already exist on the router.
+                          Use a dedicated customer-facing bridge or VLAN. The
+                          gateway address must already be assigned to that
+                          interface, and the matching trusted TLS certificate
+                          must already exist on the router.
                         </p>
                       </div>
                       <div className="grid gap-3 sm:grid-cols-2">
                         <div className="space-y-2">
-                          <label htmlFor="hotspot-interface" className="text-sm font-medium">
+                          <label
+                            htmlFor="hotspot-interface"
+                            className="text-sm font-medium"
+                          >
                             HotSpot interface
                           </label>
                           <Input
@@ -698,7 +952,10 @@ export default function RouterEnrollment({
                           />
                         </div>
                         <div className="space-y-2">
-                          <label htmlFor="hotspot-address" className="text-sm font-medium">
+                          <label
+                            htmlFor="hotspot-address"
+                            className="text-sm font-medium"
+                          >
                             HotSpot gateway IPv4 address
                           </label>
                           <Input
@@ -714,7 +971,10 @@ export default function RouterEnrollment({
                           />
                         </div>
                         <div className="space-y-2">
-                          <label htmlFor="hotspot-pool-start" className="text-sm font-medium">
+                          <label
+                            htmlFor="hotspot-pool-start"
+                            className="text-sm font-medium"
+                          >
                             Client pool start IPv4
                           </label>
                           <Input
@@ -730,7 +990,10 @@ export default function RouterEnrollment({
                           />
                         </div>
                         <div className="space-y-2">
-                          <label htmlFor="hotspot-pool-end" className="text-sm font-medium">
+                          <label
+                            htmlFor="hotspot-pool-end"
+                            className="text-sm font-medium"
+                          >
                             Client pool end IPv4
                           </label>
                           <Input
@@ -746,7 +1009,10 @@ export default function RouterEnrollment({
                           />
                         </div>
                         <div className="space-y-2">
-                          <label htmlFor="hotspot-dns-name" className="text-sm font-medium">
+                          <label
+                            htmlFor="hotspot-dns-name"
+                            className="text-sm font-medium"
+                          >
                             HotSpot portal DNS name
                           </label>
                           <Input
@@ -762,7 +1028,10 @@ export default function RouterEnrollment({
                           />
                         </div>
                         <div className="space-y-2">
-                          <label htmlFor="hotspot-certificate-name" className="text-sm font-medium">
+                          <label
+                            htmlFor="hotspot-certificate-name"
+                            className="text-sm font-medium"
+                          >
                             RouterOS TLS certificate name
                           </label>
                           <Input
@@ -772,7 +1041,9 @@ export default function RouterEnrollment({
                             placeholder="For example, hotspot-login"
                             value={hotspotCertificateName}
                             onChange={(event) => {
-                              setHotspotCertificateName(event.target.value.trim());
+                              setHotspotCertificateName(
+                                event.target.value.trim(),
+                              );
                               setHotspotServiceScript(null);
                             }}
                           />
@@ -796,7 +1067,10 @@ export default function RouterEnrollment({
                       </Button>
                       {hotspotServiceScript && (
                         <div className="space-y-2">
-                          <label htmlFor="hotspot-service-script" className="text-sm font-medium">
+                          <label
+                            htmlFor="hotspot-service-script"
+                            className="text-sm font-medium"
+                          >
                             RouterOS HotSpot service script
                           </label>
                           <Textarea
@@ -809,7 +1083,12 @@ export default function RouterEnrollment({
                             type="button"
                             variant="secondary"
                             className="w-full"
-                            onClick={() => void copyText(hotspotServiceScript, "HotSpot service script")}
+                            onClick={() =>
+                              void copyText(
+                                hotspotServiceScript,
+                                "HotSpot service script",
+                              )
+                            }
                           >
                             <Copy className="mr-2 size-4" />
                             Copy HotSpot service script
@@ -819,11 +1098,13 @@ export default function RouterEnrollment({
                       <Alert>
                         <AlertTitle>Review before applying</AlertTitle>
                         <AlertDescription>
-                          This creates or updates only the marked Astrid HotSpot pool, profile,
-                          and server. It does not assign the gateway address, configure DHCP or
-                          firewall/NAT, or set up WireGuard. The HTTPS certificate must match the
-                          portal DNS name and be trusted by clients. Confirm the isolated network
-                          and RADIUS settings before connecting subscribers.
+                          This creates or updates only the marked Astrid HotSpot
+                          pool, profile, and server. It does not assign the
+                          gateway address, configure DHCP or firewall/NAT, or
+                          set up WireGuard. The HTTPS certificate must match the
+                          portal DNS name and be trusted by clients. Confirm the
+                          isolated network and RADIUS settings before connecting
+                          subscribers.
                         </AlertDescription>
                       </Alert>
                     </div>
@@ -837,11 +1118,20 @@ export default function RouterEnrollment({
           ) : token ? (
             <div className="space-y-4">
               <Alert>
-                <AlertTitle>Generate the key on the RouterOS device</AlertTitle>
+                <AlertTitle>
+                  Run the script, then bind the printed key here
+                </AlertTitle>
                 <AlertDescription>
-                  Run this idempotent RouterOS v7 script in Terminal. RouterOS keeps the private
-                  key on the device and prints only its public key. The token stays in this browser
-                  and is never included in the script.
+                  Run this idempotent RouterOS v7 script in Terminal. RouterOS
+                  keeps the private key on the device and prints only its public
+                  key. Paste the entire braced script at once so its local
+                  variables remain in scope. Running the script only prepares
+                  the device key; it does not enroll the router yet. Copy the
+                  printed public key into the field below and select “Bind
+                  router public key” to create the router record. The token
+                  stays in this browser and is never included in the script.
+                  There is no live callback from RouterOS, so this page can
+                  report success or failure only after you submit the key.
                 </AlertDescription>
               </Alert>
               <Textarea
@@ -854,14 +1144,34 @@ export default function RouterEnrollment({
                 type="button"
                 variant="secondary"
                 className="w-full"
-                onClick={() => void copyText(buildRouterEnrollmentScript(), "RouterOS script")}
+                onClick={() =>
+                  void copyText(
+                    buildRouterEnrollmentScript(),
+                    "RouterOS script",
+                  )
+                }
               >
                 <Copy className="mr-2 size-4" />
                 Copy RouterOS script
               </Button>
-              <form onSubmit={(event) => void redeem(event)} className="space-y-3">
+              <form
+                onSubmit={(event) => void redeem(event)}
+                className="space-y-3"
+              >
+                {redeemError && (
+                  <Alert variant="destructive">
+                    <AlertTitle>Enrollment was not completed</AlertTitle>
+                    <AlertDescription>
+                      {redeemError} The enrollment remains available until it
+                      expires; correct the public key or retry the request.
+                    </AlertDescription>
+                  </Alert>
+                )}
                 <div className="space-y-2">
-                  <label htmlFor="router-public-key" className="text-sm font-medium">
+                  <label
+                    htmlFor="router-public-key"
+                    className="text-sm font-medium"
+                  >
                     RouterOS public key
                   </label>
                   <Input
@@ -872,26 +1182,37 @@ export default function RouterEnrollment({
                     pattern="[A-Za-z0-9+/]{43}="
                     title="Paste the 44-character WireGuard public key printed by RouterOS"
                     value={routerPublicKey}
-                    onChange={(event) => setRouterPublicKey(event.target.value.trim())}
+                    onChange={(event) => {
+                      setRouterPublicKey(event.target.value.trim());
+                      setRedeemError(null);
+                    }}
                     placeholder="Paste the public key printed by the script"
                     disabled={submitting}
                   />
                 </div>
                 <p className="text-xs text-muted-foreground">
                   Enrollment token expires{" "}
-                  {expiresAt ? new Date(expiresAt).toLocaleString() : "in 30 minutes"}.
-                  Redeeming binds this key once; the private key is never sent here. If the request
-                  times out, retry without closing this dialog so the same secret can complete it.
+                  {expiresAt
+                    ? new Date(expiresAt).toLocaleString()
+                    : "in 30 minutes"}
+                  . Redeeming binds this key once; the private key is never sent
+                  here. If the request times out, retry without closing this
+                  dialog so the same secret can complete it.
                 </p>
                 <Button type="submit" className="w-full" disabled={submitting}>
-                  {submitting && <LoaderCircle className="mr-2 size-4 animate-spin" />}
+                  {submitting && (
+                    <LoaderCircle className="mr-2 size-4 animate-spin" />
+                  )}
                   Bind router public key
                 </Button>
               </form>
               <details className="rounded-md border border-border p-3">
-                <summary className="cursor-pointer text-sm font-medium">Rollback script</summary>
+                <summary className="cursor-pointer text-sm font-medium">
+                  Rollback script
+                </summary>
                 <p className="my-2 text-xs text-muted-foreground">
-                  Run only if you want to remove the temporary enrollment interface.
+                  Run only if you want to remove the temporary enrollment
+                  interface.
                 </p>
                 <Textarea
                   aria-label="RouterOS rollback script"
@@ -905,7 +1226,10 @@ export default function RouterEnrollment({
                   size="sm"
                   className="mt-2"
                   onClick={() =>
-                    void copyText(buildRouterEnrollmentRollbackScript(), "Rollback script")
+                    void copyText(
+                      buildRouterEnrollmentRollbackScript(),
+                      "Rollback script",
+                    )
                   }
                 >
                   <Copy className="mr-2 size-4" />
@@ -922,9 +1246,15 @@ export default function RouterEnrollment({
               </Button>
             </div>
           ) : (
-            <form onSubmit={(event) => void create(event)} className="space-y-4">
+            <form
+              onSubmit={(event) => void create(event)}
+              className="space-y-4"
+            >
               <div className="space-y-2">
-                <label htmlFor="enrollment-router-name" className="text-sm font-medium">
+                <label
+                  htmlFor="enrollment-router-name"
+                  className="text-sm font-medium"
+                >
                   Router name
                 </label>
                 <Input
@@ -939,8 +1269,12 @@ export default function RouterEnrollment({
                 />
               </div>
               <div className="space-y-2">
-                <label htmlFor="enrollment-router-location" className="text-sm font-medium">
-                  Location <span className="text-muted-foreground">(optional)</span>
+                <label
+                  htmlFor="enrollment-router-location"
+                  className="text-sm font-medium"
+                >
+                  Location{" "}
+                  <span className="text-muted-foreground">(optional)</span>
                 </label>
                 <Input
                   id="enrollment-router-location"
@@ -952,8 +1286,12 @@ export default function RouterEnrollment({
                 />
               </div>
               <div className="space-y-2">
-                <label htmlFor="enrollment-router-model" className="text-sm font-medium">
-                  Router model <span className="text-muted-foreground">(optional)</span>
+                <label
+                  htmlFor="enrollment-router-model"
+                  className="text-sm font-medium"
+                >
+                  Router model{" "}
+                  <span className="text-muted-foreground">(optional)</span>
                 </label>
                 <Input
                   id="enrollment-router-model"
@@ -965,11 +1303,13 @@ export default function RouterEnrollment({
                 />
               </div>
               <p className="text-xs text-muted-foreground">
-                RouterOS v7 is selected for this enrollment. RouterOS v6 WireGuard support is not
-                included in this milestone.
+                RouterOS v7 is selected for this enrollment. RouterOS v6
+                WireGuard support is not included in this milestone.
               </p>
               <Button type="submit" className="w-full" disabled={submitting}>
-                {submitting && <LoaderCircle className="mr-2 size-4 animate-spin" />}
+                {submitting && (
+                  <LoaderCircle className="mr-2 size-4 animate-spin" />
+                )}
                 Create enrollment token
               </Button>
             </form>

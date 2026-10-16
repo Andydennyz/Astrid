@@ -14,6 +14,74 @@ What we covered:
 Expected outcome:
 - A clear project path and correct sequencing of lab setup before live deployment.
 
+M1 (Round 2) - Practical System Foundation and Clean-Lab Restart
+Status: Passed (2026-10-16) - host, isolated topology, and staged Ubuntu startup verified
+Purpose:
+- Re-run the foundation milestone as the start of hands-on round-two validation. The original M1 records the design decisions; this entry tracks evidence that the planned architecture and isolated lab are actually ready to build and test.
+Practical scope:
+- Confirm the host virtualization platform, available resources, and how lab VMs and networks will be managed.
+- Reconfirm the end-to-end design and trust boundaries between the billing application/Convex, Ubuntu, WireGuard, FreeRADIUS, the management gateway, MikroTik RouterOS, and the PPPoE client.
+- Define and verify an isolated lab network plan before creating or connecting guests; do not bridge lab subscriber traffic onto a home or production network.
+- Treat the MikroTik CHR and PPPoE client VMs as deleted and rebuild them from scratch at their appropriate later milestones. Inventory the Ubuntu VM at that time rather than assuming it still exists or is correctly configured.
+Pass evidence:
+- Record the virtualization platform/version and confirm sufficient host resources for the staged lab.
+- Record a reviewed topology and milestone-by-milestone rebuild/test sequence, with an observable pass condition for every component.
+- Confirm no production deployment or public network exposure is part of this foundation pass. Convex changes later in the round must be tested first and deployed only to the explicitly identified development/preview target after a successful pass; production requires separate explicit approval.
+- Save command/test output or dated verification notes for each practical check; do not mark a milestone passed based on intended configuration alone.
+Read-only host inventory (2026-10-16):
+- Windows 11 Pro host; Oracle VirtualBox 7.2.6 is installed. The command-line tool is available at `C:\Program Files\Oracle\VirtualBox\VBoxManage.exe`.
+- VirtualBox detects hardware virtualization and nested paging on the 4-core Intel Core i5-2400S.
+- Host has 16.3 GB RAM and about 5.1 GB available at inspection time, with approximately 89.9 GB free on C:. Disk headroom is adequate for a staged lab, but current free RAM is not enough to assume the full Ubuntu/CHR/client stack can run concurrently. Establish and test a safe VM memory budget before the end-to-end milestones.
+- `Astrid-WireGuard-Lab` is registered with a 4.3 GB RAM / 3 vCPU profile and NAT plus host-only networking. It has now booted to an Ubuntu shell after local disk unlock.
+- `Astrid-PPPoE-Client` is still registered but powered off, despite the reported deletion. Its VM folder currently contains the VirtualBox configuration and logs but no virtual disk; treat it as a stale registration, not a usable client installation.
+- No MikroTik CHR VM appears in the registered VM list. Recreate the CHR from scratch at its scheduled milestone.
+- The VirtualBox host-only adapter is up at 192.168.56.1/24. Internal networks `Astrid-PPPoE-Lab` and `intnet` are registered; only the former is referenced by the stale PPPoE-client configuration. Guest-to-guest connectivity and the purpose of the extra `intnet` have not been tested.
+- Operator confirmed the isolated topology: Ubuntu NAT plus host-only management/WireGuard; CHR host-only management plus a separate internal subscriber link; the PPPoE client attaches only to that internal link. No bridged/public subscriber traffic.
+- Operator chose to use this PC, tune guest RAM, and close host applications before concurrent integration tests. This is a resource-management plan, not yet a measured pass; recheck available RAM before starting multiple guests and do not proceed if Windows or the guests become unstable.
+- Operator reported 10.1 GB of 15.9 GB RAM available (2026-10-16), above the 8 GB threshold for starting the Ubuntu VM alone. This does not establish that all three guests can run concurrently.
+- Started only the existing Ubuntu lab VM in headless mode. The operator unlocked its encrypted disk locally; no passphrase was shared. The VM responds to host-only ping at 192.168.56.101 and TCP port 22 is reachable. Host free RAM was about 4.2 GB after boot.
+- The Ubuntu guest reported 3.6 GiB total RAM, 472 MiB used, and 3.1 GiB available at idle. This supports the current VM startup but is not a multi-VM load test; tune guest allocations and recheck host availability before concurrent CHR/client tests.
+- Ubuntu reports `wg-quick@wg0` active and enabled, with `wg0` at 10.77.0.1/24 and a configured peer allowed at 10.77.0.2/32. The output did not show handshake or transfer evidence; the CHR VM is absent, so tunnel connectivity is not yet verified. Verify at the WireGuard integration milestone.
+- FreeRADIUS currently reports inactive, and no UDP listener was shown on ports 1812/1813. Record this as a baseline for its later service milestone; do not configure or restart it during M1.
+- No VM configuration, virtual network, disk, or Convex deployment was changed. The stale PPPoE-client registration remains untouched.
+Next:
+- Proceed to M2 round-two authentication/workspace access verification. The Ubuntu VM remains running; if it is not needed before the next lab session, shut it down from its console to free host RAM.
+
+
+M2 (Round 2) - Practical Authentication and Workspace Isolation Verification
+Status: Passed (2026-10-16) - dev owner directory, workspace request approval/rejection, and non-owner denial verified
+Practical scope:
+- Re-run application/backend tests for authenticated access, workspace membership, role enforcement, invitations, and cross-tenant isolation.
+- Sign in through the actual app auth provider and verify workspace selection, member roles, invitation acceptance/revocation, and access denial between two test users/workspaces.
+- Add a platform-owner directory for tenant metadata and workspace-creation request approvals; keep it separate from tenant membership and operational/billing data.
+- Use development/test data only. Dev schema/function sync is allowed after successful local verification; do not deploy to production or use production accounts/data.
+Pass evidence:
+- Record targeted automated test results and a dated manual verification of both allowed and denied access paths.
+- Confirm test accounts and test workspace data are disposable and do not contain production/customer records.
+- Deploy Convex changes only after tests pass and only to the explicitly identified development/preview target; production requires separate explicit approval.
+Next action:
+- Proceed to M3 Round 2 secure router enrollment practical verification. Keep using disposable development/test identities and data; production remains out of scope.
+Round-two verification notes (2026-10-16):
+- `npm test -- convex/tenantIsolation.test.ts`: 1 test file passed, 4 tests passed. Coverage includes cross-workspace reads/foreign parent references, read-only mutation denial, router secret projection, and invitation email/role/revocation behavior.
+- Operator reports successful OIDC sign-in returning to the app dashboard and confirms the account role is Owner with one workspace. This is the operator's usual account, and the workspace is not confirmed to contain only disposable test data. The browser session available to the assistant remained unauthenticated, so sign-in is recorded as operator-reported, not independently observed.
+- No live account/workspace mutation was performed by the assistant during the initial authentication/invitation checks. Operator-created temporary workspace behavior is recorded separately below.
+- Operator created a temporary workspace while signed in with a second account. Its absence from the main account is expected until that identity is invited and accepts; `workspaces.listMine` returns only the authenticated user's memberships.
+- The first attempted invitation acceptance returned `INVITATION_EMAIL_MISMATCH`. The acceptance mutation compares the authenticated OIDC identity email, trimmed and lowercased, to the invitation email, also stored lowercased. This is an intentional authorization check; the error indicates the signed-in account email did not match the invitation's target email. Do not bypass this check.
+- The screenshot exposed no evidence of a ghost tenant or failed workspace creation. `workspaces.listMine` intentionally returns only the authenticated identity's memberships, so the second account's workspace is not visible to the main account until invited and accepted.
+- Operator later reports the invitation works after addressing the account/email mismatch. No actual email addresses, invitation links, or tokens are recorded here.
+- Operator requested a platform-owner tenant count/directory and chose metadata-only visibility (workspace name, creation date, owner identity; no tenant service/billing data), guarded by a dedicated platform-admin role from a server-side allowlist of exact OIDC token identifiers.
+- Implemented a paginated tenant metadata directory and workspace-request approval/rejection controls. Platform-owner navigation is tied to the exact normalized `andywesonga43@gmail.com` identity; protected backend operations also require its exact token identifier in `PLATFORM_ADMIN_TOKEN_IDENTIFIERS`. No workspace is created before approval, and approval atomically creates the workspace and requester owner membership. Invitation to an existing workspace is unchanged. The directory exposes no tenant operational/billing records.
+- Local verification: full suite passed (12 files, 57 tests); `npx tsc --noEmit`, ESLint, and production build passed. Build emits existing dependency-annotation and large-bundle warnings.
+- At the earlier verification checkpoint, the Convex dev sync to `quirky-ferret-868` had succeeded but the dev allowlist and live workflow checks were still pending; the following final checks supersede that status.
+- No allowlist values or identity identifiers have been added to source control or this ledger. The exact owner token identifier was configured only in the dev deployment environment.
+- Final M2 Round 2 check (operator-reported, 2026-10-16): the exact owner token identifier was configured in the dev deployment environment; the owner signed in and confirmed the Tenants directory and approval controls were visible. The token identifier itself is intentionally not recorded.
+- Using a disposable second dev account, the operator submitted `M2-R2-Approval-Test-20261016`; it remained pending and no workspace existed before approval. The owner approved it, after which the workspace became available to the requester.
+- The operator submitted `M2-R2-Rejection-Test-20261016`; the owner rejected it, and the request remained rejected with no workspace created or made available.
+- The second account navigated directly to `/platform/tenants` and received “Access restricted”; no tenant directory or approval controls were visible.
+- The operator had earlier confirmed that invitation acceptance works after correcting the invited-account email mismatch. Automated round-two regression coverage also passed for workspace isolation, invitation authorization/revocation, owner-only approval, and request rejection.
+- M2 is marked passed based on the automated results and the operator's reported manual checks above. The shared browser session available to the assistant remained signed out, so these live UI checks were not independently observed.
+- The approved workspace from this test is disposable dev data and remains in the dev deployment unless separately cleaned up; do not delete it without confirming the exact test workspace.
+
 
 Milestone 2 - Workspace Membership, Roles, and Scoped Access
 Status: Completed
@@ -50,6 +118,57 @@ What we covered:
 Expected outcome:
 - A safe and traceable onboarding path for routers without exposing private keys to the app.
 
+M3 (Round 2) - Practical Secure Router Enrollment
+Status: Passed (2026-10-16) - operator confirmed router was created successfully and supplied screenshot showing the router card in the selected workspace
+Practical scope:
+- Recreate the MikroTik CHR VM from an official RouterOS v7 CHR image; the CHR is not registered and no installer/disk was found in Downloads.
+- Keep the router on the isolated lab networks only. Do not attach a subscriber-facing interface to a home, office, or public/bridged network.
+- Exercise the app enrollment flow end to end with the disposable dev tenant: issue a short-lived enrollment, run the generated RouterOS enrollment script, redeem using the CHR-generated public key, and confirm the enrolled router appears with unknown/unprovisioned status until later network setup.
+- Verify rejection of a wrong, expired, revoked, or already-bound enrollment as appropriate; retain the automated enrollment tests as regression evidence.
+- Do not move WireGuard, RADIUS, PPPoE, or HotSpot integration ahead of their scheduled milestones.
+Pass evidence:
+- Record the RouterOS version, VM disk/image source, guest resource allocation, and isolated adapter mapping without recording private keys or shared secrets.
+- Confirm one valid enrollment produces exactly one workspace-scoped router, private key material stays on the CHR, and invalid/replayed enrollment attempts do not create duplicate routers.
+- Keep the current dev deployment and disposable test data only; no production router or customer data.
+Round-two starting inventory (2026-10-16):
+- VirtualBox reports `Astrid-WireGuard-Lab` running with 4,401 MiB RAM and 3 vCPUs; host free memory is about 3.3 GB at inspection.
+- `Astrid-PPPoE-Client` is still only a stale registration configured for 2,048 MiB; prior inspection found no virtual disk. Preserve the registration and do not start it.
+- No CHR VM was registered. Two old CHR configuration folders remain, but their referenced VDI disks are absent. C: has about 77.5 GB free.
+- Downloaded the official MikroTik long-term CHR x86 VDI for RouterOS 7.23.8 from `https://download.mikrotik.com/routeros/7.23.8/chr-7.23.8.vdi.zip`; the archive SHA-256 is `547504B7157650FBAC9D1798DDBF19705B3C74C06F9DB4ECEF4D3EC774597D0B`. The VDI was validated by VirtualBox and has 128 MiB capacity.
+- Created and registered `Astrid-CHR-R2` using 512 MiB RAM and 1 vCPU. Adapter 1 is the VirtualBox host-only management network (`192.168.56.0/24`); adapter 2 is the isolated `Astrid-PPPoE-Lab` internal network; no NAT or bridged adapter is configured.
+- The operator reported 12 GB free RAM before booting CHR. VirtualBox then showed both `Astrid-WireGuard-Lab` and `Astrid-CHR-R2` running, with about 3.3 GB free. The Ubuntu VM therefore was not actually shut down at that point; its state was left unchanged. Recheck RAM before any additional VM or service starts.
+- Booted `Astrid-CHR-R2`; its console reached `MikroTik 7.23.8 (long-term)` and the `CHR Login:` prompt. VM remains running with 512 MiB RAM and 1 vCPU, attached only to host-only management and `Astrid-PPPoE-Lab` internal network. PPPoE client VM remains off.
+- The operator initialized the local CHR admin password privately; no password was shared. Using VirtualBox's supported `keyboardputstring` input, inspected the interfaces and confirmed `ether1` has `192.168.56.103/24` on the host-only network; `ether2` remains attached only to the isolated internal network.
+- Enabled the existing SSH service and restricted its allowed source range to `192.168.56.0/24`; enabled `/ip ssh strong-crypto`. Verified RouterOS reports SSH enabled on TCP/22 with the host-only source restriction and strong crypto enabled. A host TCP connectivity probe to `192.168.56.103:22` succeeded. These RouterOS settings are part of the saved configuration and survive normal reboot.
+- Windows Terminal connection command: `ssh admin@192.168.56.103`. No password or private key was captured. Do not add a route, port-forward, NAT, or bridged management adapter.
+- First live enrollment script paste failed because RouterOS Terminal evaluated local variables as separate commands; the version guard consequently rejected RouterOS 7.23.8 and produced no valid key. The enrollment has not been redeemed.
+- Updated the app-generated enrollment and rollback scripts to execute within one braced scope. Replaced the version-prefix equality check with `:find` because direct equality against `:pick` returned false on RouterOS 7.23.8. The generated script now verifies a WireGuard interface exists and the returned public key has the expected 44-character length before printing it. The full script has not yet been successfully re-run over SSH; re-copy the updated script from the app, paste the entire block at once, and verify it prints a valid key before redeeming.
+- Verified with the CHR console that `/interface wireguard print detail` shows no interface; the failed attempts left no partial enrollment interface or peer. The console-injection utility did not preserve quote characters in strings, so it was not used as a substitute for testing the corrected script; the corrected block must be executed from Windows Terminal SSH.
+- Operator subsequently ran the corrected complete script over Windows SSH and reported a syntactically valid WireGuard public key. The key itself is not recorded here.
+- Updated the enrollment dialog to ignore backdrop/outside interaction and Escape while a one-time enrollment token or newly issued credential is displayed. The explicit dialog close button still closes it; closing an unredeemed enrollment revokes the token as before. `npx tsc --noEmit`, ESLint, Prettier check, and `git diff --check` passed for the enrollment updates.
+- Earlier screenshot mismatch was resolved: after fixing `routers:list` response serialization, the operator successfully bound the RouterOS-generated key and the router card appeared in `Astrid Tech` with `Unknown` status, as expected before tunnel provisioning. The recent enrollment showed the router was enrolled.
+- Router list/get queries now explicitly project public fields; this fixed a Convex return-validation crash caused by leaking internal `normalizedName` into the public router response. Regression tests cover the public projection.
+- `npm test -- convex/routerEnrollments.test.ts`: 1 file passed, 6 tests passed, covering invalid-token rejection, retry-safe redemption, duplicate name/key rejection, workspace isolation, and exclusion of private-key/raw RADIUS secret from stored/public router records.
+- M3 Round 2 is passed for the app-side secure enrollment. WireGuard tunnel, RADIUS, subscriber service, and session integration remain open for their scheduled milestones.
+
+M4 (Round 2) - Reverify WireGuard Connectivity
+Status: In progress - M3 router is visible; verifying current lab peer/address state before M4 configuration
+Practical scope:
+- Reverify Ubuntu `wg0`, WireGuard service state, UDP listener, and current peer handshake before changing configuration.
+- Configure the enrolled CHR as a peer using the private key retained on CHR; do not export or share private key material.
+- Use only the isolated lab networks. Do not bridge subscriber traffic or open management/WireGuard to the public internet.
+- Verify WireGuard handshake, bidirectional reachability, and transfer counters. RADIUS testing remains in its scheduled milestone.
+Round-two starting evidence (2026-10-16):
+- Both `Astrid-WireGuard-Lab` (4,401 MiB, 3 vCPUs) and `Astrid-CHR-R2` (512 MiB, 1 vCPU) are running; PPPoE client remains off. Ubuntu SSH at `192.168.56.101:22` is reachable.
+- Host free RAM is approximately 3.0 GB with Ubuntu and CHR running. Do not start another VM until memory is rechecked.
+- CHR adapter 1 is host-only management; adapter 2 is `Astrid-PPPoE-Lab` internal network. CHR management SSH remains restricted to `192.168.56.0/24`.
+- Earlier notes recorded Ubuntu `wg0` at `10.77.0.1/24` and a peer allowed `10.77.0.2/32`, but no round-two handshake/transfer evidence; treat that setup as an unverified baseline.
+- Operator-reported read-only baseline (2026-10-16): Ubuntu `wg0` is `10.77.0.1/24`; `wg-quick@wg0` reports active; UDP/51820 is listening on IPv4 and IPv6. The latest read-only terminal check still shows this baseline. `sudo wg show` peer handshake/transfer output was not obtained because sudo was waiting for local authentication; do not provide the password in chat.
+- Operator-reported CHR read-only baseline (2026-10-16): `wg-astrid-enrollment` is running and listening on UDP/48073, with no IP address assigned and no peers configured. The operator confirmed the CHR public key exists and intentionally removed its value from chat. No private keys were shared, and no configuration changes have been made.
+- The operator compared keys locally and confirmed Ubuntu's existing WireGuard peer key matches the enrolled CHR public key; no key values were shared.
+- Current host verification (2026-10-16): `Astrid-WireGuard-Lab` and `Astrid-CHR-R2` are both running; CHR remains on host-only management plus `Astrid-PPPoE-Lab` internal network, Ubuntu remains on NAT plus host-only; SSH TCP/22 is reachable at `192.168.56.101` and `192.168.56.103`. Host free memory is 3.3 GB. PPPoE client remains off.
+- Operator-reported read-only CHR check: no IP address is assigned to `wg-astrid-enrollment`, and the WireGuard peer count is `0`. The Ubuntu peer/handshake detail remains unverified in this turn because sudo authentication was not completed. Do not expose public/private keys or shared secrets in chat.
+- The operator-approved CHR-side address/peer change remains unapplied. Next configure only the CHR with `10.77.0.2/24` and an Ubuntu peer targeting host-only `192.168.56.101:51820`, allowing `10.77.0.1/32` with keepalive, using Ubuntu's public key copied locally and never pasted into chat. Then verify handshake, ping, and transfer counters.
 
 Milestone 4 - WireGuard Lab Tunnel and Secure Connectivity
 Status: Completed
@@ -209,11 +328,33 @@ Backup and rollback runbook:
 Expected outcome:
 - A full, working ISP billing and provisioning system in the lab.
 
+Milestone 10 - Production Readiness, Launch, and Operational Handover
+Status: Planned; begins after Milestone 9 round-two integration is verified
+Goal:
+- Deliver and launch a complete, operational billing and ISP service platform, not just application-side setup tooling.
+Scope:
+- Complete and verify application authentication, workspace authorization, user onboarding, subscriber lifecycle, package assignment, invoices, payments, and billing records.
+- Run and verify the Ubuntu server, FreeRADIUS, and WireGuard together, with the gateway securely managing the MikroTik RouterOS API over the private tunnel.
+- Connect the billing system to RouterOS and validate router enrollment, RADIUS authentication/accounting, PPPoE subscriber access, and HotSpot subscriber access end to end.
+- Verify service provisioning, session visibility, billing status, and operational failure handling across the application, gateway, RADIUS server, and routers.
+- Complete production security and configuration review, monitoring and incident procedures, backup/restore verification, operator documentation, and a controlled launch with rollback criteria.
+Exit criteria:
+- Critical end-to-end workflows pass in the isolated integration environment, including successful and rejected authentication, accounting/session updates, service provisioning, and billing/payment state changes.
+- The production architecture and deployment configuration are reviewed; required secrets, access controls, certificates, network restrictions, and monitoring are verified without exposing credentials in source control.
+- A restore drill and rollback procedure are verified, and operational documentation is handed over.
+- Production launch is performed only after explicit approval for the identified production target; readiness or a successful lab test alone is not authorization to deploy.
+Dependency:
+- Milestone 9 remains pending until its round-two gateway, router, RADIUS, PPPoE, HotSpot, and backup/restore integration checks are complete. Milestone 10 launch work must not treat those unverified lab workflows as production-ready.
+
 
 Current Working Priority
+- Round 2 M1, M2, and M3 are passed. M3 router `astrid` is confirmed visible in the selected test workspace with `Unknown` status, as expected before tunnel setup.
+- M4 Round 2 is in progress: verify read-only Ubuntu/CHR tunnel state before applying the previously approved CHR-side configuration. Both lab VMs are running, host free memory is about 3.3 GB, and the PPPoE client remains off.
+- Use the isolated lab with tuned guest RAM and close host applications before concurrent integration tests; recheck host memory before starting multiple guests.
 - M9 application-side billing, router service setup scripts, and subscriber activation readiness are implemented. Keep VM/FreeRADIUS/CHR changes and end-to-end tests in the planned round-two integration phase; the milestone remains open until integration and backup/restore rehearsal are verified.
-- The lab is currently stable enough to continue: WireGuard tunnel and FreeRADIUS are connected and verified.
-- The client CHR VM has been created. Configure the isolated link and run end-to-end PPPoE tests after the application and gateway components are ready.
+- M10 is the final planned milestone: complete production readiness, launch, and operational handover after M9 round-two integration is verified. No production deployment is authorized by this roadmap entry.
+- Historical lab notes say WireGuard and FreeRADIUS connected successfully on 2026-10-14; this is not a round-two verification. The Ubuntu VM is registered but its current guest state has not been checked.
+- The round-two inventory found no registered MikroTik CHR. The PPPoE client entry is a stale registration with no disk; preserve it and create a fresh client VM at its scheduled milestone.
 
 Important Notes
 - Do not deploy any database or production configuration changes without explicit confirmation.
@@ -222,3 +363,16 @@ Important Notes
 - Use temporary test credentials only when necessary and remove them when the test succeeds.
 - Preserve the working reference files for troubleshooting and future milestone continuation.
 - New PPPoE passwords are encrypted only when the server encryption key is configured. Existing legacy plaintext credential records should be reset through the new workflow before they are considered usable.
+
+Platform tenant lifecycle controls
+Status: Implemented and synced to dev; automated verification passed; M2 owner directory/approval UI verified; lifecycle management actions still need separate practical UI verification
+Scope and behavior:
+- The platform owner can inspect tenant members, suspend or restore the tenant owner, archive or restore a workspace, set/remove expiry dates, extend duration, send in-app alerts to all members or one member, revoke a member's access to this tenant, transfer ownership, and permanently delete a tenant after exact-name confirmation.
+- Workspace access is denied for suspended owners, archived/suspended/expired tenants, and expired subscriptions. RADIUS and router-gateway access also reject inactive or expired tenants.
+- Lifecycle alerts are stored at account level so a tenant member can still read an alert after access is revoked or the workspace is removed. Tenant-wide lifecycle changes alert all members; targeted member actions alert the affected account.
+- Permanent deletion is separate from archive, runs in bounded batches, retains global user identities and account-level alerts, and writes a completion audit record. It does not disable sign-in at the external identity provider.
+- Platform-admin authorization continues to require the normalized owner email and the exact server-side token identifier allowlist. Do not weaken this check or put the allowlist in client/source configuration.
+Verification:
+- Full automated suite: 13 test files passed, 63 tests passed.
+- `npx tsc --noEmit`, `npm run lint`, Prettier check for changed source files, and `npm run build` passed. Build emitted existing dependency annotation and large-bundle warnings.
+- Convex sync succeeded to dev `quirky-ferret-868`; production was not touched. The authenticated owner workflow still requires the owner token identifier to be configured in the dev allowlist.
