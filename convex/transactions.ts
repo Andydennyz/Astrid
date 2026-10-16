@@ -1,13 +1,25 @@
 import { paginationOptsValidator, paginationResultValidator } from "convex/server";
-import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { ConvexError, v } from "convex/values";
+import { mutation, query, type MutationCtx } from "./_generated/server";
 import schema from "./schema";
+import type { Doc, Id } from "./_generated/dataModel";
 import { requireWorkspaceRole } from "./model/workspace";
 
 const readRoles = ["owner", "admin", "billing", "network", "read_only"] as const;
 const writeRoles = ["owner", "admin", "billing"] as const;
 const transactionDoc = schema.doc("transactions");
-const subscriberDoc = schema.doc("subscribers").omit("pppoeUsername", "pppoePassword");
+const subscriberDoc = schema
+  .doc("subscribers")
+  .omit(
+    "pppoeUsername",
+    "pppoePassword",
+    "pppoePasswordCiphertext",
+    "pppoePasswordIv",
+    "hotspotUsername",
+    "hotspotPassword",
+    "hotspotPasswordCiphertext",
+    "hotspotPasswordIv",
+  );
 const invoiceDoc = schema.doc("invoices");
 const transactionListDoc = transactionDoc.extend({
   subscriberName: v.string(), subscriberPhone: v.string(),
@@ -19,6 +31,54 @@ const methodValidator = v.union(
 const typeValidator = v.union(
   v.literal("payment"), v.literal("refund"), v.literal("credit"), v.literal("debit"),
 );
+
+function balanceChange(type: Doc<"transactions">["type"], amount: number) {
+  return type === "payment" || type === "credit" ? amount : -amount;
+}
+
+async function updateSubscriberBalance(
+  ctx: MutationCtx,
+  workspaceId: Id<"workspaces">,
+  subscriberId: Id<"subscribers"> | undefined,
+  type: Doc<"transactions">["type"],
+  amount: number,
+  direction: 1 | -1,
+) {
+  if (!subscriberId) return;
+  const subscriber = await ctx.db.get(subscriberId);
+  if (!subscriber || subscriber.workspaceId !== workspaceId) {
+    throw new ConvexError("Transaction subscriber is unavailable in this workspace");
+  }
+  await ctx.db.patch(subscriberId, {
+    balance: subscriber.balance + direction * balanceChange(type, amount),
+  });
+}
+
+async function transitionInvoicePayment(
+  ctx: MutationCtx,
+  workspaceId: Id<"workspaces">,
+  invoiceId: Id<"invoices"> | undefined,
+  type: Doc<"transactions">["type"],
+  wasCompleted: boolean,
+  willBeCompleted: boolean,
+  now: string,
+) {
+  if (!invoiceId || type !== "payment" || wasCompleted === willBeCompleted) return;
+  const invoice = await ctx.db.get(invoiceId);
+  if (!invoice || invoice.workspaceId !== workspaceId) {
+    throw new ConvexError("Transaction invoice is unavailable in this workspace");
+  }
+  if (willBeCompleted) {
+    if (invoice.status === "paid") throw new ConvexError("Invoice already paid");
+    if (invoice.status === "cancelled") {
+      throw new ConvexError("Cancelled invoices cannot be paid");
+    }
+    await ctx.db.patch(invoiceId, { status: "paid", paidDate: now });
+  } else if (invoice.status === "paid") {
+    const status = invoice.dueDate.slice(0, 10) < now.slice(0, 10) ? "overdue" : "pending";
+    await ctx.db.patch(invoiceId, { status, paidDate: undefined });
+  }
+}
 
 export const list = query({
   args: {
@@ -133,12 +193,25 @@ export const create = mutation({
   returns: v.id("transactions"),
   handler: async (ctx, args) => {
     const { identity } = await requireWorkspaceRole(ctx, args.workspaceId, writeRoles);
+    if (!Number.isFinite(args.amount) || args.amount <= 0) {
+      throw new ConvexError("Transaction amount must be greater than zero");
+    }
     let invoice = null;
     if (args.invoiceId) {
       invoice = await ctx.db.get(args.invoiceId);
       if (!invoice || invoice.workspaceId !== args.workspaceId) throw new Error("Invoice not found");
+      if (args.type !== "payment") {
+        throw new ConvexError("Transactions linked to an invoice must be payments");
+      }
+      if (args.amount !== invoice.amount) {
+        throw new ConvexError("Invoice payments must match the full invoice amount");
+      }
       if (args.subscriberId && invoice.subscriberId !== args.subscriberId) {
         throw new Error("Invoice and subscriber do not match");
+      }
+      if (invoice.status === "paid") throw new ConvexError("Invoice already paid");
+      if (invoice.status === "cancelled") {
+        throw new ConvexError("Cancelled invoices cannot be paid");
       }
     }
     const subscriberId = args.subscriberId ?? invoice?.subscriberId;
@@ -151,15 +224,13 @@ export const create = mutation({
     const id = await ctx.db.insert("transactions", {
       ...fields, workspaceId, subscriberId, createdAt: now,
     });
-    if (invoice && args.status === "completed" && args.type === "payment") {
-      await ctx.db.patch(invoice._id, { status: "paid", paidDate: now });
-    }
     if (subscriberId && args.status === "completed") {
-      const subscriber = await ctx.db.get(subscriberId);
-      if (subscriber?.workspaceId === args.workspaceId) {
-        const delta = args.type === "payment" || args.type === "credit" ? args.amount : -args.amount;
-        await ctx.db.patch(subscriberId, { balance: subscriber.balance + delta });
-      }
+      await updateSubscriberBalance(ctx, args.workspaceId, subscriberId, args.type, args.amount, 1);
+    }
+    if (invoice && args.status === "completed") {
+      await transitionInvoicePayment(
+        ctx, args.workspaceId, invoice._id, args.type, false, true, now,
+      );
     }
     await ctx.db.insert("audit_logs", {
       workspaceId, userId: identity.tokenIdentifier, action: "create",
@@ -178,11 +249,27 @@ export const updateStatus = mutation({
     const { identity } = await requireWorkspaceRole(ctx, args.workspaceId, writeRoles);
     const tx = await ctx.db.get(args.id);
     if (!tx || tx.workspaceId !== args.workspaceId) throw new Error("Transaction not found");
+    if (tx.status === args.status) return null;
+    const now = new Date().toISOString();
+    await transitionInvoicePayment(
+      ctx,
+      args.workspaceId,
+      tx.invoiceId,
+      tx.type,
+      tx.status === "completed",
+      args.status === "completed",
+      now,
+    );
+    if (tx.status === "completed") {
+      await updateSubscriberBalance(ctx, args.workspaceId, tx.subscriberId, tx.type, tx.amount, -1);
+    } else if (args.status === "completed") {
+      await updateSubscriberBalance(ctx, args.workspaceId, tx.subscriberId, tx.type, tx.amount, 1);
+    }
     await ctx.db.patch(args.id, { status: args.status });
     await ctx.db.insert("audit_logs", {
       workspaceId: args.workspaceId, userId: identity.tokenIdentifier, action: "update",
       resource: "transaction", resourceId: args.id,
-      details: `Updated transaction status to ${args.status}`, createdAt: new Date().toISOString(),
+      details: `Updated transaction status from ${tx.status} to ${args.status}`, createdAt: now,
     });
     return null;
   },
@@ -195,11 +282,17 @@ export const remove = mutation({
     const { identity } = await requireWorkspaceRole(ctx, args.workspaceId, writeRoles);
     const tx = await ctx.db.get(args.id);
     if (!tx || tx.workspaceId !== args.workspaceId) throw new Error("Transaction not found");
+    const now = new Date().toISOString();
+    if (tx.status === "completed") {
+      await transitionInvoicePayment(
+        ctx, args.workspaceId, tx.invoiceId, tx.type, true, false, now,
+      );
+      await updateSubscriberBalance(ctx, args.workspaceId, tx.subscriberId, tx.type, tx.amount, -1);
+    }
     await ctx.db.delete(args.id);
     await ctx.db.insert("audit_logs", {
       workspaceId: args.workspaceId, userId: identity.tokenIdentifier, action: "delete",
-      resource: "transaction", resourceId: args.id, details: "Deleted transaction",
-      createdAt: new Date().toISOString(),
+      resource: "transaction", resourceId: args.id, details: "Deleted transaction", createdAt: now,
     });
     return null;
   },
@@ -213,7 +306,17 @@ export const getSubscribersList = query({
     const subscribers = await ctx.db.query("subscribers")
       .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
       .order("asc").take(200);
-    return subscribers.map(({ pppoeUsername: _username, pppoePassword: _password, ...safeSubscriber }) => safeSubscriber);
+    return subscribers.map(({
+      pppoeUsername: _username,
+      pppoePassword: _password,
+      pppoePasswordCiphertext: _ciphertext,
+      pppoePasswordIv: _iv,
+      hotspotUsername: _hotspotUsername,
+      hotspotPassword: _hotspotPassword,
+      hotspotPasswordCiphertext: _hotspotCiphertext,
+      hotspotPasswordIv: _hotspotIv,
+      ...safeSubscriber
+    }) => safeSubscriber);
   },
 });
 

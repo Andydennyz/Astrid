@@ -84,8 +84,21 @@ export default function SubscriberTable({ statusFilter, connFilter, search, onSe
       await updateStatus({ workspaceId, ids: Array.from(selected), status: newStatus });
       toast.success(`${selected.size} subscriber(s) updated to ${newStatus}`);
       setSelected(new Set());
-    } catch {
-      toast.error("Failed to update status");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to update status");
+    }
+  };
+
+  const updateOneStatus = async (
+    id: Id<"subscribers">,
+    newStatus: "active" | "suspended",
+  ) => {
+    if (!workspaceId) return;
+    try {
+      await updateStatus({ workspaceId, ids: [id], status: newStatus });
+      toast.success(`Subscriber ${newStatus === "active" ? "activated" : "suspended"}`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to update status");
     }
   };
 
@@ -309,30 +322,14 @@ export default function SubscriberTable({ statusFilter, connFilter, search, onSe
                           {sub.status !== "active" ? (
                             <DropdownMenuItem
                               className="text-green-400 cursor-pointer hover:bg-green-400/10"
-                              onClick={() => {
-                                if (workspaceId) {
-                                  void updateStatus({
-                                    workspaceId,
-                                    ids: [sub._id],
-                                    status: "active",
-                                  });
-                                }
-                              }}
+                              onClick={() => void updateOneStatus(sub._id, "active")}
                             >
                               Activate
                             </DropdownMenuItem>
                           ) : (
                             <DropdownMenuItem
                               className="text-amber-400 cursor-pointer hover:bg-amber-400/10"
-                              onClick={() => {
-                                if (workspaceId) {
-                                  void updateStatus({
-                                    workspaceId,
-                                    ids: [sub._id],
-                                    status: "suspended",
-                                  });
-                                }
-                              }}
+                              onClick={() => void updateOneStatus(sub._id, "suspended")}
                             >
                               Suspend
                             </DropdownMenuItem>

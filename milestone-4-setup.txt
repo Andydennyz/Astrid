@@ -1,0 +1,182 @@
+ASTRID BILLING SYSTEM - MILESTONE 4
+Local WireGuard Lab Setup and Troubleshooting Notes
+
+Last verified: 2026-10-14
+
+PURPOSE
+
+This document records the local WireGuard lab configured for Milestone 4.
+The goal is a private tunnel between an Ubuntu Server VM and a MikroTik
+RouterOS CHR VM running on the same Windows PC in VirtualBox.
+
+This is a local test lab only. No VPS, public endpoint, router port forwarding,
+Convex deployment, FreeRADIUS connection, or production router-management
+gateway has been configured as part of this milestone.
+
+VIRTUALBOX NETWORK
+
+Both VMs have two network adapters:
+
+1. Adapter 1: VirtualBox NAT, used for outbound internet access.
+   The guests may each show 10.0.2.15 on this isolated NAT network. These
+   addresses are not used for communication between the VMs.
+
+2. Adapter 2: VirtualBox Host-only network, 192.168.56.0/24, used for private
+   communication between the VMs.
+
+Host-only addresses observed:
+
+  Ubuntu Server VM: 192.168.56.101, interface enp0s8
+  RouterOS CHR VM:  192.168.56.102, interface ether2
+
+WIREGUARD TUNNEL
+
+Ubuntu Server:
+
+  WireGuard interface: wg0
+  Tunnel address:      10.77.0.1/24
+  Listen port:         UDP 51820
+  Host-only endpoint:  192.168.56.101:51820
+  Public key:          pNvbBdkKDVMezqa9NVGgXIlnAsRT7tzn8TZ/IRkTlj4=
+
+RouterOS CHR:
+
+  RouterOS version:   7.24.5
+  WireGuard interface: wg-astrid-enrollment
+  Tunnel address:      10.77.0.2/24
+  Server endpoint:     192.168.56.101:51820
+  Allowed address:     10.77.0.1/32
+  Persistent keepalive: 25 seconds
+  Public key:           FMizI+ClkYlGDRsDEF8C/FQqVksmR3nqmjISVrW+PEQ=
+
+Peer relationship:
+
+  Ubuntu wg0 has the CHR public key as a peer with AllowedIPs 10.77.0.2/32.
+  CHR has the Ubuntu public key as a peer with AllowedIPs 10.77.0.1/32.
+
+Private keys are generated and retained locally by their respective machines.
+They are intentionally not recorded in this document. Never paste private
+keys, passwords, or full configuration files containing PrivateKey values into
+support requests.
+
+UBUNTU CONFIGURATION AND STARTUP
+
+Ubuntu's persistent interface configuration is expected at:
+
+  /etc/wireguard/wg0.conf
+
+The interface was brought up and enabled at boot with:
+
+  sudo wg-quick up wg0
+  sudo systemctl enable wg-quick@wg0
+
+When `wg-quick up wg0` says "`wg0' already exists", the interface is already
+up; do not repeatedly add or start it. Inspect it instead:
+
+  sudo wg show wg0
+  ip -4 addr show wg0
+  systemctl is-enabled wg-quick@wg0
+  systemctl status wg-quick@wg0 --no-pager
+
+The server peer's AllowedIPs is 10.77.0.2/32. The CHR host-only endpoint is
+192.168.56.101:51820. The Ubuntu WireGuard configuration should contain the
+server's private key locally and the CHR public key in its [Peer] section.
+
+ROUTEROS PEER CONFIGURATION
+
+The CHR WireGuard interface and peer were configured from the RouterOS console.
+Read-only checks (safe to run repeatedly) include:
+
+  /interface wireguard print detail
+  /interface wireguard peers print detail
+  /ip address print
+  /ping 10.77.0.1 count=5
+
+Expected values include interface address 10.77.0.2/24, peer endpoint
+192.168.56.101:51820, allowed-address 10.77.0.1/32, and keepalive 25s.
+Do not re-run interface or address `add` commands if those entries already
+exist; that can create duplicate configuration.
+
+FIREWALL SCOPE
+
+The intended lab scope is host-only/private. If Ubuntu's UFW is active, the
+WireGuard UDP rule should be limited to interface enp0s8 and CHR source
+192.168.56.102. Check current rules with:
+
+  sudo ufw status verbose
+
+Do not enable UFW solely for this setup without reviewing the existing SSH
+and network rules. Do not configure VirtualBox port forwarding, home-router
+port forwarding, or bridged networking for this local lab.
+
+VERIFICATION EVIDENCE
+
+On 2026-10-14, the CHR console showed:
+
+  /ping 10.77.0.1 count=5
+  sent=5 received=5 packet-loss=0%
+
+The CHR WireGuard peer details showed:
+
+  current-endpoint-address=192.168.56.101
+  current-endpoint-port=51820
+  allowed-address=10.77.0.1/32
+  persistent-keepalive=25s
+  rx and tx byte counters were non-zero
+  last-handshake was recent
+
+This verifies that CHR reached Ubuntu over the WireGuard tunnel at that time.
+It does not verify FreeRADIUS, PPPoE, HotSpot, the management gateway, API-SSL,
+or production/public connectivity.
+
+TROUBLESHOOTING CHECKLIST
+
+If the CHR ping to 10.77.0.1 fails:
+
+1. In VirtualBox, confirm both VMs are running, Adapter 2 is attached to the
+   same Host-only network, and Cable Connected is enabled.
+2. On Ubuntu, confirm the host-only address:
+
+     ip -4 -br addr
+
+   Expect enp0s8 to have 192.168.56.101/24.
+3. On CHR, confirm ether2 has a host-only address:
+
+     /ip address print
+     /ip dhcp-client print detail
+
+   Expect 192.168.56.102/24 on ether2.
+4. On Ubuntu, inspect WireGuard state:
+
+     sudo wg show wg0
+     ip -4 addr show wg0
+
+   Expect wg0 at 10.77.0.1/24, listening on 51820, with the CHR peer listed.
+5. On CHR, inspect the peer:
+
+     /interface wireguard peers print detail
+
+   Confirm the server public key, endpoint 192.168.56.101:51820, and allowed
+   address 10.77.0.1/32. A recent last-handshake and increasing rx/tx counters
+   indicate traffic is passing.
+6. If UFW is active, check whether its rules permit UDP 51820 on enp0s8 from
+   192.168.56.102. Do not expose the port on the public/home-router interface.
+7. If startup failed, inspect:
+
+     sudo systemctl status wg-quick@wg0 --no-pager
+     sudo journalctl -u wg-quick@wg0 --no-pager -n 50
+
+   Do not share logs or configuration output until checking that no private
+   key or password is included.
+
+CONFIGURATION SAFETY
+
+- Public keys and the lab IP addresses above are not private keys.
+- Never share /etc/wireguard/server.key, RouterOS private keys, passwords, or
+  a wg0.conf that contains the PrivateKey line.
+- Do not run add commands again as a troubleshooting shortcut; first inspect
+  existing entries to avoid duplicates.
+- The temporary CHR interface name is wg-astrid-enrollment. Its key was
+  generated on CHR and the private key remains there.
+- The Ubuntu wg0 interface is configured to start on boot; verify with
+  `systemctl is-enabled wg-quick@wg0`.

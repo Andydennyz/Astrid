@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useMutation, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
 import { useWorkspace } from "@/components/providers/workspace.tsx";
 import { useForm, Controller } from "react-hook-form";
@@ -21,6 +21,12 @@ const schema = z.object({
   packageId: z.string().optional(),
   monthlyFee: z.coerce.number().min(0),
   ipAddress: z.string().optional(),
+  pppoeUsername: z.string().optional(),
+  pppoePassword: z.string().optional(),
+  hotspotUsername: z.string().optional(),
+  hotspotPassword: z.string().optional(),
+  createInitialInvoice: z.boolean(),
+  invoiceDueDate: z.string(),
 });
 
 type FormData = z.infer<typeof schema>;
@@ -34,6 +40,8 @@ export default function StepSubscriber({ isDone, onComplete }: Props) {
   const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [saving, setSaving] = useState(false);
   const createSubscriber = useMutation(api.onboarding.createStarterSubscriber);
+  const createPppoeSubscriber = useAction(api.subscribers.createPppoe);
+  const createHotspotSubscriber = useAction(api.subscribers.createHotspot);
   const packages = useQuery(
     api.packages.listActive,
     workspaceId ? { workspaceId } : "skip",
@@ -41,7 +49,12 @@ export default function StepSubscriber({ isDone, onComplete }: Props) {
 
   const { register, handleSubmit, control, watch, setValue, formState: { errors } } = useForm<FormData>({
     resolver: zodResolver(schema),
-    defaultValues: { connectionType: "pppoe", monthlyFee: 0 },
+    defaultValues: {
+      connectionType: "pppoe",
+      monthlyFee: 0,
+      createInitialInvoice: false,
+      invoiceDueDate: new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10),
+    },
   });
 
   const selectedPkgId = watch("packageId");
@@ -57,20 +70,88 @@ export default function StepSubscriber({ isDone, onComplete }: Props) {
     if (!workspaceId) return;
     setSaving(true);
     try {
-      await createSubscriber({
-        workspaceId,
-        name: data.name,
-        phone: data.phone,
-        email: data.email || undefined,
-        connectionType: data.connectionType,
-        packageId: data.packageId as Parameters<typeof createSubscriber>[0]["packageId"],
-        monthlyFee: data.monthlyFee,
-        ipAddress: data.ipAddress || undefined,
-      });
-      toast.success("First subscriber added!");
+      const packageId = data.packageId as Parameters<typeof createSubscriber>[0]["packageId"];
+      if (data.createInitialInvoice && data.monthlyFee <= 0) {
+        toast.error("Set a positive monthly fee to create an initial invoice.");
+        return;
+      }
+      if (data.createInitialInvoice && !data.invoiceDueDate) {
+        toast.error("Choose a due date for the initial invoice.");
+        return;
+      }
+      const initialInvoice = data.createInitialInvoice
+        ? {
+            dueDate: new Date(`${data.invoiceDueDate}T00:00:00.000Z`).toISOString(),
+            description: "Initial internet subscription",
+          }
+        : undefined;
+      if (data.connectionType === "pppoe") {
+        if (!data.pppoeUsername?.trim() || !data.pppoePassword) {
+          toast.error("PPPoE subscribers require a username and password.");
+          return;
+        }
+        if (!packageId) {
+          toast.error("Select a PPPoE package.");
+          return;
+        }
+        await createPppoeSubscriber({
+          workspaceId,
+          name: data.name,
+          phone: data.phone,
+          email: data.email || undefined,
+          status: "active",
+          packageId,
+          monthlyFee: data.monthlyFee,
+          balance: 0,
+          ipAddress: data.ipAddress || undefined,
+          pppoeUsername: data.pppoeUsername,
+          pppoePassword: data.pppoePassword,
+          ...(initialInvoice ? { initialInvoice } : {}),
+        });
+      } else if (data.connectionType === "hotspot") {
+        if (!data.hotspotUsername?.trim() || !data.hotspotPassword) {
+          toast.error("Hotspot subscribers require a username and password.");
+          return;
+        }
+        if (!packageId) {
+          toast.error("Select a Hotspot package.");
+          return;
+        }
+        await createHotspotSubscriber({
+          workspaceId,
+          name: data.name,
+          phone: data.phone,
+          email: data.email || undefined,
+          status: "active",
+          packageId,
+          monthlyFee: data.monthlyFee,
+          balance: 0,
+          ipAddress: data.ipAddress || undefined,
+          hotspotUsername: data.hotspotUsername,
+          hotspotPassword: data.hotspotPassword,
+          ...(initialInvoice ? { initialInvoice } : {}),
+        });
+      } else {
+        await createSubscriber({
+          workspaceId,
+          name: data.name,
+          phone: data.phone,
+          email: data.email || undefined,
+          connectionType: "static",
+          packageId,
+          monthlyFee: data.monthlyFee,
+          ipAddress: data.ipAddress || undefined,
+          ...(initialInvoice ? { initialInvoice } : {}),
+        });
+      }
+      toast.success(
+        data.createInitialInvoice
+          ? "First subscriber and initial invoice added!"
+          : "First subscriber added!",
+      );
       onComplete();
-    } catch {
-      toast.error("Failed to add subscriber. Please try again.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to add subscriber. Please try again.");
     } finally {
       setSaving(false);
     }
@@ -115,7 +196,17 @@ export default function StepSubscriber({ isDone, onComplete }: Props) {
                 name="connectionType"
                 control={control}
                 render={({ field }) => (
-                  <Select value={field.value} onValueChange={field.onChange}>
+                  <Select
+                    value={field.value}
+                    onValueChange={(connectionType) => {
+                      field.onChange(connectionType);
+                      const selectedPackage = packages?.find((pkg) => pkg._id === selectedPkgId);
+                      if (selectedPackage && selectedPackage.type !== connectionType) {
+                        setValue("packageId", undefined);
+                        setValue("monthlyFee", 0);
+                      }
+                    }}
+                  >
                     <SelectTrigger>
                       <SelectValue />
                     </SelectTrigger>
@@ -140,7 +231,7 @@ export default function StepSubscriber({ isDone, onComplete }: Props) {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">No package</SelectItem>
-                  {packages?.map((p) => (
+                  {packages?.filter((pkg) => pkg.type === watch("connectionType")).map((p) => (
                     <SelectItem key={p._id} value={p._id}>
                       {p.name} — KES {p.price.toLocaleString()}
                     </SelectItem>
@@ -149,9 +240,59 @@ export default function StepSubscriber({ isDone, onComplete }: Props) {
               </Select>
             </div>
 
+            {watch("connectionType") === "pppoe" && (
+              <>
+                <div className="space-y-1.5">
+                  <Label htmlFor="pppoe-username">PPPoE Username</Label>
+                  <Input id="pppoe-username" autoComplete="username" {...register("pppoeUsername")} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="pppoe-password">PPPoE Password</Label>
+                  <Input id="pppoe-password" type="password" autoComplete="new-password" {...register("pppoePassword")} />
+                </div>
+              </>
+            )}
+            {watch("connectionType") === "hotspot" && (
+              <>
+                <div className="space-y-1.5">
+                  <Label htmlFor="hotspot-username">Hotspot Username</Label>
+                  <Input id="hotspot-username" autoComplete="username" {...register("hotspotUsername")} />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="hotspot-password">Hotspot Password</Label>
+                  <Input id="hotspot-password" type="password" autoComplete="new-password" {...register("hotspotPassword")} />
+                </div>
+              </>
+            )}
+
             <div className="space-y-1.5">
               <Label htmlFor="fee">Monthly Fee (KES)</Label>
               <Input id="fee" type="number" placeholder="0" {...register("monthlyFee")} />
+            </div>
+
+            <div className="col-span-2 space-y-2 rounded-md border border-border p-3">
+              <label htmlFor="create-initial-invoice" className="flex items-center gap-2 text-sm">
+                <Input
+                  id="create-initial-invoice"
+                  type="checkbox"
+                  className="h-4 w-4"
+                  {...register("createInitialInvoice")}
+                />
+                Create an initial invoice for this subscriber
+              </label>
+              {watch("createInitialInvoice") && (
+                <div className="space-y-1.5">
+                  <Label htmlFor="initial-invoice-due-date">Invoice due date</Label>
+                  <Input
+                    id="initial-invoice-due-date"
+                    type="date"
+                    {...register("invoiceDueDate")}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    The invoice amount will use the monthly fee shown above.
+                  </p>
+                </div>
+              )}
             </div>
 
             <div className="space-y-1.5">

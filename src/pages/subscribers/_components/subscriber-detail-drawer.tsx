@@ -25,6 +25,7 @@ import {
   Trash2,
   ShieldBan,
   ShieldCheck,
+  KeyRound,
 } from "lucide-react";
 import { format } from "date-fns";
 import { toast } from "sonner";
@@ -69,8 +70,8 @@ export default function SubscriberDetailDrawer({ subscriberId, onClose, onEdit }
     try {
       await updateStatus({ workspaceId, ids: [subscriberId], status: newStatus });
       toast.success(`Subscriber ${newStatus === "active" ? "activated" : "suspended"}`);
-    } catch {
-      toast.error("Failed to update status");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to update status");
     }
   };
 
@@ -148,6 +149,17 @@ export default function SubscriberDetailDrawer({ subscriberId, onClose, onEdit }
                   { icon: Mail, label: "Email", value: sub.email ?? "—" },
                   { icon: MapPin, label: "Address", value: sub.address ?? "—" },
                   { icon: Server, label: "IP Address", value: sub.ipAddress ?? "—" },
+                  {
+                    icon: KeyRound,
+                    label: "Service Username",
+                    value:
+                      sub.connectionType === "pppoe"
+                        ? sub.pppoeUsername ?? "—"
+                        : sub.connectionType === "hotspot"
+                          ? sub.hotspotUsername ?? "—"
+                          : "—",
+                    mono: true,
+                  },
                   {
                     icon: Server,
                     label: "MAC Address",

@@ -7,7 +7,18 @@ import { requireWorkspaceRole } from "./model/workspace";
 const readRoles = ["owner", "admin", "billing", "network", "read_only"] as const;
 const writeRoles = ["owner", "admin", "billing"] as const;
 const invoiceDoc = schema.doc("invoices");
-const subscriberDoc = schema.doc("subscribers").omit("pppoeUsername", "pppoePassword");
+const subscriberDoc = schema
+  .doc("subscribers")
+  .omit(
+    "pppoeUsername",
+    "pppoePassword",
+    "pppoePasswordCiphertext",
+    "pppoePasswordIv",
+    "hotspotUsername",
+    "hotspotPassword",
+    "hotspotPasswordCiphertext",
+    "hotspotPasswordIv",
+  );
 const packageDoc = schema.doc("packages");
 const transactionDoc = schema.doc("transactions");
 const invoiceListDoc = invoiceDoc.extend({ subscriberName: v.string(), subscriberPhone: v.string() });
@@ -140,7 +151,17 @@ export const getInvoiceById = query({
     const subscriber = await ctx.db.get(invoice.subscriberId);
     if (!subscriber || subscriber.workspaceId !== args.workspaceId) return null;
     const pkg = subscriber.packageId ? await ctx.db.get(subscriber.packageId) : null;
-    const { pppoeUsername: _username, pppoePassword: _password, ...safeSubscriber } = subscriber;
+    const {
+      pppoeUsername: _username,
+      pppoePassword: _password,
+      pppoePasswordCiphertext: _ciphertext,
+      pppoePasswordIv: _iv,
+      hotspotUsername: _hotspotUsername,
+      hotspotPassword: _hotspotPassword,
+      hotspotPasswordCiphertext: _hotspotCiphertext,
+      hotspotPasswordIv: _hotspotIv,
+      ...safeSubscriber
+    } = subscriber;
     return {
       ...invoice, subscriber: safeSubscriber,
       package: pkg?.workspaceId === args.workspaceId ? pkg : null,
@@ -254,7 +275,17 @@ export const getSubscribersList = query({
       .withIndex("by_workspace_and_status", (q) =>
         q.eq("workspaceId", args.workspaceId).eq("status", "active"))
       .take(200);
-    return subscribers.map(({ pppoeUsername: _username, pppoePassword: _password, ...safeSubscriber }) => safeSubscriber);
+    return subscribers.map(({
+      pppoeUsername: _username,
+      pppoePassword: _password,
+      pppoePasswordCiphertext: _ciphertext,
+      pppoePasswordIv: _iv,
+      hotspotUsername: _hotspotUsername,
+      hotspotPassword: _hotspotPassword,
+      hotspotPasswordCiphertext: _hotspotCiphertext,
+      hotspotPasswordIv: _hotspotIv,
+      ...safeSubscriber
+    }) => safeSubscriber);
   },
 });
 
@@ -345,10 +376,15 @@ export const recordPayment = mutation({
     const invoice = await ctx.db.get(args.invoiceId);
     if (!invoice || invoice.workspaceId !== args.workspaceId) throw new Error("Invoice not found");
     if (invoice.status === "paid") throw new Error("Invoice already paid");
+    if (invoice.status === "cancelled") throw new Error("Cancelled invoices cannot be paid");
+    if (!Number.isFinite(invoice.amount) || invoice.amount <= 0) {
+      throw new Error("Invoice amount must be greater than zero");
+    }
     const subscriber = await ctx.db.get(invoice.subscriberId);
     if (!subscriber || subscriber.workspaceId !== args.workspaceId) throw new Error("Subscriber not found");
     const now = new Date().toISOString();
     await ctx.db.patch(args.invoiceId, { status: "paid", paidDate: now });
+    await ctx.db.patch(subscriber._id, { balance: subscriber.balance + invoice.amount });
     const txId = await ctx.db.insert("transactions", {
       workspaceId: args.workspaceId, subscriberId: invoice.subscriberId,
       invoiceId: args.invoiceId, amount: invoice.amount, type: "payment",

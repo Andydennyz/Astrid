@@ -28,7 +28,6 @@ import {
   MoreVertical,
   WifiOff,
   Wifi,
-  FileText,
   Trash2,
   MapPin,
   Cpu,
@@ -37,9 +36,10 @@ import {
   Signal,
 } from "lucide-react";
 import type { Doc, Id } from "@/convex/_generated/dataModel.d.ts";
-import AddRouterDialog from "./_components/add-router-dialog.tsx";
-import WireGuardConfigDialog from "./_components/wireguard-config-dialog.tsx";
-import type { RouterProvisioningConfig } from "./_components/wireguard-config-dialog.tsx";
+import RouterEnrollment from "./_components/router-enrollment.tsx";
+import RouterManagementSetup from "./_components/router-management-setup.tsx";
+import RouterGatewayCredentials from "./_components/router-gateway-credentials.tsx";
+import RouterFeatureBoundary from "./_components/router-feature-boundary.tsx";
 
 type PublicRouter = Omit<Doc<"routers">, "privateKey" | "presharedKey" | "radiusSecret">;
 
@@ -51,11 +51,9 @@ function StatusBadge({ status }: { status: Doc<"routers">["status"] }) {
 
 function RouterCard({
   router,
-  onViewConfig,
   onDelete,
 }: {
   router: PublicRouter;
-  onViewConfig: (r: PublicRouter) => void;
   onDelete: (id: Id<"routers">) => void;
 }) {
   const { selectedWorkspaceId: workspaceId } = useWorkspace();
@@ -93,9 +91,6 @@ function RouterCard({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => onViewConfig(router)} className="cursor-pointer">
-                  <FileText className="w-4 h-4 mr-2" /> WireGuard Config
-                </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() => onDelete(router._id)}
                   className="text-destructive cursor-pointer"
@@ -133,6 +128,10 @@ function RouterCard({
             <span className="font-mono">{router.tunnelIp}</span>
           </div>
         </div>
+
+        <RouterFeatureBoundary feature="Router management setup">
+          <RouterManagementSetup router={router} />
+        </RouterFeatureBoundary>
 
         {/* Stats */}
         <div className="grid grid-cols-3 gap-2 pt-1">
@@ -175,48 +174,13 @@ function StatTile({ label, value, icon }: { label: string; value: string; icon: 
   );
 }
 
-function RoutersPageInner({
-  externalAddOpen,
-  onExternalAddOpenChange,
-}: {
-  externalAddOpen?: boolean;
-  onExternalAddOpenChange?: (v: boolean) => void;
-}) {
+function RoutersPageInner({ onAddRouter }: { onAddRouter: () => void }) {
   const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const routers = useQuery(
     api.routers.list,
     workspaceId ? { workspaceId } : "skip",
   );
   const removeRouter = useMutation(api.routers.remove);
-  const [addOpen, setAddOpen] = useState(false);
-  const [configRouter, setConfigRouter] = useState<RouterProvisioningConfig | null>(null);
-  const [provisioningConfigs, setProvisioningConfigs] = useState<
-    Map<Id<"routers">, RouterProvisioningConfig>
-  >(() => new Map());
-
-  const handleRouterCreated = (
-    routerId: Id<"routers">,
-    config: RouterProvisioningConfig,
-  ) => {
-    setProvisioningConfigs((current) => new Map(current).set(routerId, config));
-    setConfigRouter(config);
-  };
-
-  const handleViewConfig = (router: PublicRouter) => {
-    const config = provisioningConfigs.get(router._id);
-    if (!config) {
-      toast.info(
-        "Provisioning secrets are only available when the router is created. Save its setup script securely.",
-      );
-      return;
-    }
-    setConfigRouter(config);
-  };
-
-  // Use external state if provided, otherwise local
-  const dialogOpen = externalAddOpen ?? addOpen;
-  const setDialogOpen = onExternalAddOpenChange ?? setAddOpen;
-
   const handleDelete = async (id: Id<"routers">) => {
     if (!workspaceId) return;
     if (!confirm("Delete this router? This will also remove its session history.")) return;
@@ -248,12 +212,13 @@ function RoutersPageInner({
             </EmptyMedia>
             <EmptyTitle>No routers yet</EmptyTitle>
             <EmptyDescription>
-              Add your first MikroTik router to manage WireGuard tunnels and RADIUS authentication.
+              Start a secure enrollment to register a RouterOS-generated public key and prepare
+              matching RouterOS and FreeRADIUS client configuration.
             </EmptyDescription>
           </EmptyHeader>
           <EmptyContent>
-            <Button size="sm" onClick={() => setDialogOpen(true)}>
-              <Plus className="w-4 h-4 mr-2" /> Add Router
+            <Button size="sm" onClick={onAddRouter}>
+              <Plus className="w-4 h-4 mr-2" /> Start Enrollment
             </Button>
           </EmptyContent>
         </Empty>
@@ -263,26 +228,12 @@ function RoutersPageInner({
             <RouterCard
               key={router._id}
               router={router}
-              onViewConfig={handleViewConfig}
               onDelete={handleDelete}
             />
           ))}
         </div>
       )}
 
-      <AddRouterDialog
-        open={dialogOpen}
-        onOpenChange={setDialogOpen}
-        onCreated={handleRouterCreated}
-      />
-
-      {configRouter && (
-        <WireGuardConfigDialog
-          router={configRouter}
-          open={!!configRouter}
-          onOpenChange={(v) => { if (!v) setConfigRouter(null); }}
-        />
-      )}
     </>
   );
 }
@@ -300,12 +251,12 @@ export default function RoutersPage() {
             Router Management
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Manage MikroTik routers via WireGuard tunnel. Each router connects to FreeRADIUS for subscriber authentication.
+            Securely enroll MikroTik routers and generate matching manual RADIUS configuration. The Ubuntu gateway worker, automated WireGuard provisioning, and live integration verification remain outstanding.
           </p>
         </div>
         <Authenticated>
           <Button onClick={() => setAddOpen(true)}>
-            <Plus className="w-4 h-4 mr-2" /> Add Router
+            <Plus className="w-4 h-4 mr-2" /> Start Enrollment
           </Button>
         </Authenticated>
       </div>
@@ -318,19 +269,19 @@ export default function RoutersPage() {
             <div className="w-5 h-5 rounded bg-primary/20 flex items-center justify-center shrink-0 mt-0.5">
               <span className="text-primary font-bold text-[10px]">1</span>
             </div>
-            <span><strong className="text-foreground">WireGuard</strong> — Each router creates an encrypted VPN tunnel to the billing server for management traffic.</span>
+            <span><strong className="text-foreground">WireGuard</strong> — The lab tunnel is verified; router peer and address provisioning remains a separate operator-applied step.</span>
           </div>
           <div className="flex items-start gap-2">
             <div className="w-5 h-5 rounded bg-primary/20 flex items-center justify-center shrink-0 mt-0.5">
               <span className="text-primary font-bold text-[10px]">2</span>
             </div>
-            <span><strong className="text-foreground">FreeRADIUS</strong> — MikroTik queries FreeRADIUS via rlm_rest. This billing system serves auth/accounting via HTTP.</span>
+            <span><strong className="text-foreground">FreeRADIUS</strong> — RouterOS and FreeRADIUS client snippets are generated at enrollment; server configuration, service setup, and CHR connectivity still need verification.</span>
           </div>
           <div className="flex items-start gap-2">
             <div className="w-5 h-5 rounded bg-primary/20 flex items-center justify-center shrink-0 mt-0.5">
               <span className="text-primary font-bold text-[10px]">3</span>
             </div>
-            <span><strong className="text-foreground">Subscribers</strong> — PPPoE/hotspot credentials in the billing system are automatically used for RADIUS auth decisions.</span>
+            <span><strong className="text-foreground">Subscribers</strong> — PPPoE and Hotspot credentials are encrypted server-side and checked by the app-side RADIUS flow.</span>
           </div>
         </div>
       </div>
@@ -342,7 +293,13 @@ export default function RoutersPage() {
       </Unauthenticated>
 
       <Authenticated>
-        <RoutersPageInner externalAddOpen={addOpen} onExternalAddOpenChange={setAddOpen} />
+        <div className="space-y-6">
+          <RouterFeatureBoundary feature="Ubuntu gateway access">
+            <RouterGatewayCredentials />
+          </RouterFeatureBoundary>
+          <RoutersPageInner onAddRouter={() => setAddOpen(true)} />
+          <RouterEnrollment open={addOpen} onOpenChange={setAddOpen} />
+        </div>
       </Authenticated>
     </div>
   );

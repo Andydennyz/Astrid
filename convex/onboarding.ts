@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import { requireWorkspaceRole } from "./model/workspace";
+import { createInitialInvoice, initialInvoiceValidator } from "./model/initialInvoice";
 
 const profileValidator = v.object({
   _id: v.id("users"),
@@ -178,10 +179,11 @@ export const createStarterSubscriber = mutation({
     name: v.string(),
     phone: v.string(),
     email: v.optional(v.string()),
-    connectionType: v.union(v.literal("pppoe"), v.literal("hotspot"), v.literal("static")),
+    connectionType: v.literal("static"),
     packageId: v.optional(v.id("packages")),
     monthlyFee: v.number(),
     ipAddress: v.optional(v.string()),
+    initialInvoice: v.optional(initialInvoiceValidator),
   },
   returns: v.id("subscribers"),
   handler: async (ctx, args) => {
@@ -192,11 +194,11 @@ export const createStarterSubscriber = mutation({
     ]);
     if (args.packageId) {
       const pkg = await ctx.db.get(args.packageId);
-      if (!pkg || pkg.workspaceId !== args.workspaceId) {
-        throw new Error("Package does not belong to this workspace");
+      if (!pkg || pkg.workspaceId !== args.workspaceId || pkg.type !== "static") {
+        throw new Error("Select a static package in this workspace");
       }
     }
-    const { workspaceId, ...subscriberFields } = args;
+    const { workspaceId, initialInvoice, ...subscriberFields } = args;
     const id = await ctx.db.insert("subscribers", {
       ...subscriberFields,
       workspaceId,
@@ -214,6 +216,15 @@ export const createStarterSubscriber = mutation({
       details: `Added first subscriber: ${args.name}`,
       createdAt: new Date().toISOString(),
     });
+    if (initialInvoice) {
+      await createInitialInvoice(ctx, {
+        workspaceId,
+        subscriberId: id,
+        amount: args.monthlyFee,
+        ...initialInvoice,
+        userId: identity.tokenIdentifier,
+      });
+    }
     return id;
   },
 });

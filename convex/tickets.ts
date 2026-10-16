@@ -5,7 +5,18 @@ import schema from "./schema";
 import { requireWorkspaceRole } from "./model/workspace";
 
 const readRoles = ["owner", "admin", "billing", "network", "read_only"] as const;
-const subscriberDoc = schema.doc("subscribers").omit("pppoeUsername", "pppoePassword");
+const subscriberDoc = schema
+  .doc("subscribers")
+  .omit(
+    "pppoeUsername",
+    "pppoePassword",
+    "pppoePasswordCiphertext",
+    "pppoePasswordIv",
+    "hotspotUsername",
+    "hotspotPassword",
+    "hotspotPasswordCiphertext",
+    "hotspotPasswordIv",
+  );
 const ticketDoc = schema.doc("tickets");
 const ticketListDoc = ticketDoc.extend({
   subscriberName: v.union(v.string(), v.null()),
@@ -195,6 +206,16 @@ export const getSubscribersList = query({
       .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
       .order("asc")
       .take(200);
-    return subscribers.map(({ pppoeUsername: _username, pppoePassword: _password, ...subscriber }) => subscriber);
+    return subscribers.map(({
+      pppoeUsername: _username,
+      pppoePassword: _password,
+      pppoePasswordCiphertext: _ciphertext,
+      pppoePasswordIv: _iv,
+      hotspotUsername: _hotspotUsername,
+      hotspotPassword: _hotspotPassword,
+      hotspotPasswordCiphertext: _hotspotCiphertext,
+      hotspotPasswordIv: _hotspotIv,
+      ...subscriber
+    }) => subscriber);
   },
 });

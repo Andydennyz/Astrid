@@ -77,9 +77,15 @@ export default defineSchema({
     lastSeen: v.optional(v.string()),
     notes: v.optional(v.string()),
     address: v.optional(v.string()),
-    // PPPoE / Hotspot credentials for RADIUS authentication
+    // Service credentials for RADIUS authentication
     pppoeUsername: v.optional(v.string()),
     pppoePassword: v.optional(v.string()),
+    pppoePasswordCiphertext: v.optional(v.string()),
+    pppoePasswordIv: v.optional(v.string()),
+    hotspotUsername: v.optional(v.string()),
+    hotspotPassword: v.optional(v.string()),
+    hotspotPasswordCiphertext: v.optional(v.string()),
+    hotspotPasswordIv: v.optional(v.string()),
     createdAt: v.string(),
   })
     .index("by_status", ["status"])
@@ -88,7 +94,11 @@ export default defineSchema({
     .index("by_workspace", ["workspaceId"])
     .index("by_workspace_and_status", ["workspaceId", "status"])
     .index("by_workspace_and_connection_type", ["workspaceId", "connectionType"])
-    .index("by_workspace_and_package", ["workspaceId", "packageId"]),
+    .index("by_workspace_and_package", ["workspaceId", "packageId"])
+    .index("by_pppoe_username", ["pppoeUsername"])
+    .index("by_workspace_and_pppoe_username", ["workspaceId", "pppoeUsername"])
+    .index("by_hotspot_username", ["hotspotUsername"])
+    .index("by_workspace_and_hotspot_username", ["workspaceId", "hotspotUsername"]),
 
   packages: defineTable({
     workspaceId: v.id("workspaces"),
@@ -276,16 +286,17 @@ export default defineSchema({
   routers: defineTable({
     workspaceId: v.id("workspaces"),
     name: v.string(),
+    normalizedName: v.optional(v.string()),
     // WireGuard config
     publicKey: v.string(),
-    privateKey: v.string(),
+    privateKey: v.optional(v.string()),
     presharedKey: v.optional(v.string()),
     // Addressing
-    tunnelIp: v.string(),        // e.g. 10.200.0.2/32 — peer tunnel IP
-    serverPublicKey: v.string(), // billing-server WireGuard public key
-    serverEndpoint: v.string(),  // e.g. billing.example.com:51820
-    serverTunnelIp: v.string(),  // e.g. 10.200.0.1/32
-    allowedIPs: v.string(),      // e.g. 0.0.0.0/0 or specific subnets
+    tunnelIp: v.optional(v.string()),        // e.g. 10.200.0.2/32 — peer tunnel IP
+    serverPublicKey: v.optional(v.string()), // billing-server WireGuard public key
+    serverEndpoint: v.optional(v.string()),  // e.g. billing.example.com:51820
+    serverTunnelIp: v.optional(v.string()),  // e.g. 10.200.0.1/32
+    allowedIPs: v.optional(v.string()),      // e.g. 0.0.0.0/0 or specific subnets
     dns: v.optional(v.string()),
     // Device info
     ipAddress: v.optional(v.string()), // LAN IP of router
@@ -295,17 +306,106 @@ export default defineSchema({
     lastSeen: v.optional(v.string()),
     notes: v.optional(v.string()),
     // RADIUS / billing link
-    radiusSecret: v.string(),
+    radiusSecret: v.optional(v.string()),
+    radiusSecretHash: v.optional(v.string()),
     nasIdentifier: v.string(),  // NAS-Identifier sent by this router
     // RouterOS version — drives provisioning script syntax
     routerOsVersion: v.optional(v.union(v.literal("v6"), v.literal("v7"))),
     createdAt: v.string(),
   })
     .index("by_status", ["status"])
+    .index("by_public_key", ["publicKey"])
     .index("by_nas_identifier", ["nasIdentifier"])
     .index("by_workspace", ["workspaceId"])
+    .index("by_workspace_and_name", ["workspaceId", "name"])
+    .index("by_workspace_and_normalized_name", ["workspaceId", "normalizedName"])
     .index("by_workspace_and_status", ["workspaceId", "status"])
     .index("by_workspace_and_nas_identifier", ["workspaceId", "nasIdentifier"]),
+
+  router_management_setups: defineTable({
+    workspaceId: v.id("workspaces"),
+    routerId: v.id("routers"),
+    managementAddress: v.string(),
+    gatewaySourceAddress: v.string(),
+    apiPort: v.literal(8729),
+    apiUsername: v.string(),
+    certificateName: v.string(),
+    scriptVersion: v.literal("routeros-v7-api-ssl-v1"),
+    scriptSha256: v.string(),
+    status: v.union(v.literal("prepared"), v.literal("operator_applied")),
+    createdBy: v.id("users"),
+    createdAt: v.string(),
+    operatorAppliedAt: v.optional(v.string()),
+  })
+    .index("by_workspace_and_router", ["workspaceId", "routerId"])
+    .index("by_workspace_and_status", ["workspaceId", "status"]),
+
+  router_gateway_credentials: defineTable({
+    workspaceId: v.id("workspaces"),
+    tokenHash: v.string(),
+    createdBy: v.id("users"),
+    createdAt: v.string(),
+  }).index("by_workspace", ["workspaceId"]),
+
+  router_gateway_operations: defineTable({
+    workspaceId: v.id("workspaces"),
+    routerId: v.id("routers"),
+    setupId: v.id("router_management_setups"),
+    operationType: v.literal("verify_management"),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("leased"),
+      v.literal("succeeded"),
+      v.literal("failed"),
+    ),
+    attemptCount: v.number(),
+    createdBy: v.id("users"),
+    createdAt: v.string(),
+    claimedAt: v.optional(v.string()),
+    leaseExpiresAt: v.optional(v.number()),
+    claimTokenHash: v.optional(v.string()),
+    completedAt: v.optional(v.string()),
+    detail: v.optional(v.string()),
+  })
+    .index("by_workspace_and_router_and_created_at", ["workspaceId", "routerId", "createdAt"])
+    .index("by_workspace_and_setup_and_status", ["workspaceId", "setupId", "status"])
+    .index("by_workspace_and_status_and_created_at", ["workspaceId", "status", "createdAt"])
+    .index("by_workspace_and_status_and_lease_expiry", [
+      "workspaceId",
+      "status",
+      "leaseExpiresAt",
+    ]),
+
+  router_enrollments: defineTable({
+    workspaceId: v.id("workspaces"),
+    name: v.string(),
+    normalizedName: v.string(),
+    location: v.optional(v.string()),
+    model: v.optional(v.string()),
+    routerOsVersion: v.literal("v7"),
+    tokenHash: v.string(),
+    expiresAt: v.number(),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("expired"),
+      v.literal("revoked"),
+      v.literal("redeemed"),
+    ),
+    createdAt: v.string(),
+    createdBy: v.id("users"),
+    routerPublicKey: v.optional(v.string()),
+    routerId: v.optional(v.id("routers")),
+    redeemedAt: v.optional(v.string()),
+  })
+    .index("by_token_hash", ["tokenHash"])
+    .index("by_workspace", ["workspaceId"])
+    .index("by_router_public_key", ["routerPublicKey"])
+    .index("by_workspace_and_name_and_status_and_expiry", [
+      "workspaceId",
+      "normalizedName",
+      "status",
+      "expiresAt",
+    ]),
 
   // PPPoE / Hotspot sessions reported via RADIUS accounting
   router_sessions: defineTable({
@@ -342,6 +442,7 @@ export default defineSchema({
     .index("by_workspace", ["workspaceId"])
     .index("by_workspace_and_router", ["workspaceId", "routerId"])
     .index("by_workspace_and_router_and_status", ["workspaceId", "routerId", "status"])
+    .index("by_workspace_and_router_and_session_id", ["workspaceId", "routerId", "sessionId"])
     .index("by_workspace_and_session_id", ["workspaceId", "sessionId"])
     .index("by_workspace_and_status", ["workspaceId", "status"])
     .index("by_workspace_and_start_time", ["workspaceId", "startTime"]),

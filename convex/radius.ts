@@ -71,7 +71,7 @@ export const logAndReject = internalMutation({
 export const upsertSession = internalMutation({
   args: {
     sessionId: v.string(),
-    routerId: v.optional(v.id("routers")),
+    routerId: v.id("routers"),
     subscriberId: v.optional(v.id("subscribers")),
     username: v.string(),
     nasIdentifier: v.string(),
@@ -101,14 +101,21 @@ export const upsertSession = internalMutation({
     }
     const existing = await ctx.db
       .query("router_sessions")
-      .withIndex("by_workspace_and_session_id", (index) =>
-        index.eq("workspaceId", router.workspaceId!).eq("sessionId", args.sessionId),
+      .withIndex("by_workspace_and_router_and_session_id", (index) =>
+        index
+          .eq("workspaceId", router.workspaceId!)
+          .eq("routerId", router._id)
+          .eq("sessionId", args.sessionId),
       )
       .first();
+    if (existing?.status === "stopped" && args.status !== "stopped") {
+      return null;
+    }
     const { sessionId: _sessionId, routerId: _routerId, ...sessionFields } = args;
     if (existing) {
       await ctx.db.patch(existing._id, {
         ...sessionFields,
+        startTime: existing.startTime,
         workspaceId: router.workspaceId,
         routerId: router._id,
       });

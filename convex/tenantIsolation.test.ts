@@ -42,6 +42,16 @@ describe("workspace tenant boundaries", () => {
       uploadSpeed: 10,
       isActive: true,
     });
+    const staticPackageA = await ownerA.mutation(api.packages.create, {
+      workspaceId: workspaceA,
+      name: "Static 10",
+      speed: "10 Mbps",
+      price: 500,
+      type: "static",
+      downloadSpeed: 10,
+      uploadSpeed: 5,
+      isActive: true,
+    });
 
     await expect(
       ownerB.query(api.packages.getById, { workspaceId: workspaceB, id: packageA }),
@@ -52,8 +62,8 @@ describe("workspace tenant boundaries", () => {
         name: "Foreign package subscriber",
         phone: "+254700000001",
         status: "active",
-        connectionType: "pppoe",
-        packageId: packageA,
+        connectionType: "static",
+        packageId: staticPackageA,
         monthlyFee: 1000,
         balance: 0,
       }),
@@ -106,19 +116,23 @@ describe("workspace tenant boundaries", () => {
     const t = convexTest(schema, modules);
     const owner = authenticatedTestUser(t, "router-owner", "router-owner@example.test");
     const workspaceId = await owner.mutation(api.workspaces.create, { name: "Router security" });
-    await owner.mutation(api.routers.create, {
-      workspaceId,
-      name: "Test router",
-      publicKey: "public-key",
-      privateKey: "private-key",
-      presharedKey: "preshared-key",
-      tunnelIp: "10.77.0.2/32",
-      serverPublicKey: "server-public-key",
-      serverEndpoint: "vpn.example.test:51820",
-      serverTunnelIp: "10.77.0.1/32",
-      allowedIPs: "10.77.0.0/24",
-      radiusSecret: "radius-secret",
-      nasIdentifier: "test-router",
+    await t.run(async (ctx) => {
+      await ctx.db.insert("routers", {
+        workspaceId,
+        name: "Test router",
+        publicKey: "public-key",
+        privateKey: "private-key",
+        presharedKey: "preshared-key",
+        tunnelIp: "10.77.0.2/32",
+        serverPublicKey: "server-public-key",
+        serverEndpoint: "vpn.example.test:51820",
+        serverTunnelIp: "10.77.0.1/32",
+        allowedIPs: "10.77.0.0/24",
+        radiusSecret: "radius-secret",
+        nasIdentifier: "test-router",
+        status: "unknown",
+        createdAt: new Date().toISOString(),
+      });
     });
 
     const routers = await owner.query(api.routers.list, { workspaceId });

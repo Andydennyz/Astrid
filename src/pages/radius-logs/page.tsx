@@ -183,38 +183,73 @@ export default function RadiusLogsPage() {
         </p>
       </div>
 
-      {/* FreeRADIUS rlm_rest config snippet */}
+      {/* FreeRADIUS rlm_rest setup guidance */}
       <div className="rounded-lg border border-primary/20 bg-muted/30 p-4 space-y-3">
-        <p className="text-sm font-semibold text-foreground">FreeRADIUS rlm_rest Configuration</p>
+        <p className="text-sm font-semibold text-foreground">FreeRADIUS 3.x REST bridge</p>
+        <p className="text-xs text-muted-foreground">
+          This is a configuration template, not a live connection. Replace both placeholders;
+          keep the gateway token in a root-readable configuration file and set the matching
+          <code className="mx-1">RADIUS_GATEWAY_TOKEN</code> on the Convex server. The endpoint
+          requires HTTPS and uses the operating system CA store for certificate verification.
+          Subscriber PPPoE and Hotspot credentials are stored encrypted with
+          <code className="mx-1">PPPOE_CREDENTIAL_ENCRYPTION_KEY</code>. This credential-check flow
+          expects PAP; CHAP/MS-CHAP are not supported. Hotspot requests must include
+          <code className="mx-1">Service-Type=Login-User</code>; PPPoE uses
+          <code className="mx-1">Service-Type=Framed-User</code>. If the attribute is omitted,
+          the bridge resolves the service from a unique username within the router&apos;s workspace.
+        </p>
         <pre className="text-xs font-mono text-muted-foreground whitespace-pre-wrap">{`# /etc/freeradius/3.0/mods-available/rest
 rest {
-  connect_uri = "https://<YOUR-CONVEX-HTTP-URL>"
-
+  connect_uri = "https://<YOUR-DEPLOYMENT>.convex.site"
+  connect_timeout = 4.0
+  tls {
+    check_cert = yes
+    check_cert_cn = yes
+  }
   authorize {
     uri = "\${..connect_uri}/api/radius/authorize"
     method = 'post'
     body = 'json'
-    data = '{ "User-Name": "%{User-Name}", "NAS-Identifier": "%{NAS-Identifier}", "NAS-IP-Address": "%{NAS-IP-Address}" }'
-    tls = \${..tls}
+    force_to = 'json'
   }
-
-  authenticate {
-    uri = "\${..connect_uri}/api/radius/authenticate"
-    method = 'post'
-    body = 'json'
-    data = '{ "User-Name": "%{User-Name}", "User-Password": "%{User-Password}", "NAS-Identifier": "%{NAS-Identifier}", "NAS-IP-Address": "%{NAS-IP-Address}" }'
-    tls = \${..tls}
-  }
-
   accounting {
     uri = "\${..connect_uri}/api/radius/accounting"
     method = 'post'
     body = 'json'
-    data = '{ "User-Name": "%{User-Name}", "Acct-Session-Id": "%{Acct-Session-Id}", "Acct-Status-Type": "%{Acct-Status-Type}", "NAS-Identifier": "%{NAS-Identifier}", "NAS-IP-Address": "%{NAS-IP-Address}", "Acct-Session-Time": "%{Acct-Session-Time}", "Acct-Input-Octets": "%{Acct-Input-Octets}", "Acct-Output-Octets": "%{Acct-Output-Octets}", "Framed-IP-Address": "%{Framed-IP-Address}" }'
-    tls = \${..tls}
+    force_to = 'json'
   }
-}`}</pre>
-        <p className="text-xs text-muted-foreground">Replace <code className="bg-muted px-1 rounded">&lt;YOUR-CONVEX-HTTP-URL&gt;</code> with your Convex deployment HTTP URL (found in Hercules settings).</p>
+}
+
+# Add to the appropriate virtual server (replace the token placeholder):
+authorize {
+  update control {
+    REST-HTTP-Header := "Authorization: Bearer <RADIUS_GATEWAY_TOKEN>"
+  }
+  rest
+  if (&control:Auth-Type == Accept) {
+    accept
+  }
+  if (&control:Auth-Type == Reject) {
+    reject
+  }
+}
+
+accounting {
+  update control {
+    REST-HTTP-Header := "Authorization: Bearer <RADIUS_GATEWAY_TOKEN>"
+  }
+  rest
+}
+`}</pre>
+        <p className="text-xs text-muted-foreground">
+          The REST module serializes request attributes as JSON, including the RADIUS
+          <code className="mx-1">Service-Type</code> used to select the service-specific subscriber
+          credentials and package. The bridge returns
+          <code className="mx-1">control:Auth-Type</code> and
+          <code className="mx-1">reply:Mikrotik-Rate-Limit</code>; RouterOS rate values are
+          <code className="mx-1">upload/download</code> from the router&apos;s perspective.
+          Validate the completed configuration with <code>freeradius -XC</code> before restart.
+        </p>
       </div>
 
       <Unauthenticated>

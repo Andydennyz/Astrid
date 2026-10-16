@@ -1,0 +1,27 @@
+[Unit]
+Description=Astrid RouterOS API-SSL gateway worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=astrid-gateway
+Group=astrid-gateway
+WorkingDirectory=/opt/astrid-router-gateway
+ExecStart=/usr/bin/python3 /opt/astrid-router-gateway/gateway/router_gateway.py --config /etc/astrid-router-gateway/config.json
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useMutation, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
 import { useWorkspace } from "@/components/providers/workspace.tsx";
 import type { Id } from "@/convex/_generated/dataModel.d.ts";
@@ -29,6 +29,10 @@ type SubscriberFormData = {
   phone: string;
   status: "active" | "suspended" | "expired" | "pending";
   connectionType: "pppoe" | "hotspot" | "static";
+  pppoeUsername: string;
+  pppoePassword: string;
+  hotspotUsername: string;
+  hotspotPassword: string;
   packageId: string;
   ipAddress: string;
   macAddress: string;
@@ -44,6 +48,10 @@ const defaultForm: SubscriberFormData = {
   phone: "",
   status: "active",
   connectionType: "pppoe",
+  pppoeUsername: "",
+  pppoePassword: "",
+  hotspotUsername: "",
+  hotspotPassword: "",
   packageId: "none",
   ipAddress: "",
   macAddress: "",
@@ -75,6 +83,10 @@ export default function SubscriberFormDialog({ open, onClose, editId }: Props) {
 
   const createSub = useMutation(api.subscribers.create);
   const updateSub = useMutation(api.subscribers.update);
+  const createPppoeSub = useAction(api.subscribers.createPppoe);
+  const setPppoeCredentials = useAction(api.subscribers.setPppoeCredentials);
+  const createHotspotSub = useAction(api.subscribers.createHotspot);
+  const setHotspotCredentials = useAction(api.subscribers.setHotspotCredentials);
 
   // Pre-fill when editing
   useEffect(() => {
@@ -85,6 +97,10 @@ export default function SubscriberFormDialog({ open, onClose, editId }: Props) {
         phone: existing.phone,
         status: existing.status,
         connectionType: existing.connectionType,
+        pppoeUsername: existing.pppoeUsername ?? "",
+        pppoePassword: "",
+        hotspotUsername: existing.hotspotUsername ?? "",
+        hotspotPassword: "",
         packageId: existing.packageId ?? "none",
         ipAddress: existing.ipAddress ?? "",
         macAddress: existing.macAddress ?? "",
@@ -131,15 +147,96 @@ export default function SubscriberFormDialog({ open, onClose, editId }: Props) {
       };
 
       if (editId) {
+        if (form.connectionType === "pppoe") {
+          const usernameChanged = form.pppoeUsername.trim() !== (existing?.pppoeUsername ?? "");
+          if ((form.pppoePassword || usernameChanged) &&
+            (!form.pppoeUsername.trim() || !form.pppoePassword)) {
+            toast.error("Enter both a PPPoE username and password to change credentials.");
+            return;
+          }
+        }
+        if (form.connectionType === "hotspot") {
+          const usernameChanged =
+            form.hotspotUsername.trim() !== (existing?.hotspotUsername ?? "");
+          if ((form.hotspotPassword || usernameChanged) &&
+            (!form.hotspotUsername.trim() || !form.hotspotPassword)) {
+            toast.error("Enter both a Hotspot username and password to change credentials.");
+            return;
+          }
+          if (!existing?.hotspotUsername && !form.hotspotPassword) {
+            toast.error("Hotspot subscribers require a username and password.");
+            return;
+          }
+        }
         await updateSub({ workspaceId, id: editId, ...payload });
+        if (form.connectionType === "pppoe") {
+          const usernameChanged = form.pppoeUsername.trim() !== (existing?.pppoeUsername ?? "");
+          if (form.pppoePassword || usernameChanged) {
+            if (!form.pppoeUsername.trim() || !form.pppoePassword) {
+              toast.error("Enter both a PPPoE username and password to change credentials.");
+              return;
+            }
+            await setPppoeCredentials({
+              workspaceId,
+              id: editId,
+              username: form.pppoeUsername,
+              password: form.pppoePassword,
+            });
+          }
+        } else if (form.connectionType === "hotspot") {
+          const usernameChanged =
+            form.hotspotUsername.trim() !== (existing?.hotspotUsername ?? "");
+          if (form.hotspotPassword || usernameChanged) {
+            await setHotspotCredentials({
+              workspaceId,
+              id: editId,
+              username: form.hotspotUsername,
+              password: form.hotspotPassword,
+            });
+          }
+        }
         toast.success("Subscriber updated successfully");
       } else {
-        await createSub({ workspaceId, ...payload });
+        if (form.connectionType === "pppoe") {
+          if (!form.pppoeUsername.trim() || !form.pppoePassword) {
+            toast.error("PPPoE subscribers require a username and password.");
+            return;
+          }
+          if (form.packageId === "none") {
+            toast.error("Select a PPPoE package before creating the subscriber.");
+            return;
+          }
+          const { connectionType: _connectionType, ...pppoePayload } = payload;
+          await createPppoeSub({
+            workspaceId,
+            ...pppoePayload,
+            pppoeUsername: form.pppoeUsername,
+            pppoePassword: form.pppoePassword,
+          });
+        } else if (form.connectionType === "hotspot") {
+          if (!form.hotspotUsername.trim() || !form.hotspotPassword) {
+            toast.error("Hotspot subscribers require a username and password.");
+            return;
+          }
+          if (form.packageId === "none") {
+            toast.error("Select a Hotspot package before creating the subscriber.");
+            return;
+          }
+          const { connectionType: _connectionType, ...hotspotPayload } = payload;
+          await createHotspotSub({
+            workspaceId,
+            ...hotspotPayload,
+            hotspotUsername: form.hotspotUsername,
+            hotspotPassword: form.hotspotPassword,
+          });
+        } else {
+          await createSub({ workspaceId, ...payload, connectionType: "static" });
+        }
         toast.success("Subscriber created successfully");
       }
       onClose();
-    } catch {
-      toast.error("Failed to save subscriber. Please try again.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Failed to save subscriber.");
     } finally {
       setSaving(false);
     }
@@ -209,7 +306,13 @@ export default function SubscriberFormDialog({ open, onClose, editId }: Props) {
             <Label className="text-xs text-muted-foreground">Connection Type</Label>
             <Select
               value={form.connectionType}
-              onValueChange={(v) => set("connectionType", v)}
+              onValueChange={(v) => {
+                set("connectionType", v);
+                const selectedPackage = packages?.find((pkg) => pkg._id === form.packageId);
+                if (selectedPackage && selectedPackage.type !== v) {
+                  set("packageId", "none");
+                }
+              }}
             >
               <SelectTrigger className="bg-background border-border text-foreground">
                 <SelectValue />
@@ -221,6 +324,65 @@ export default function SubscriberFormDialog({ open, onClose, editId }: Props) {
               </SelectContent>
             </Select>
           </div>
+
+          {form.connectionType === "pppoe" && (
+            <>
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">PPPoE Username *</Label>
+                <Input
+                  autoComplete="username"
+                  value={form.pppoeUsername}
+                  onChange={(e) => set("pppoeUsername", e.target.value)}
+                  className="bg-background border-border text-foreground"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">
+                  PPPoE Password {editId ? "(leave blank to keep current)" : "*"}
+                </Label>
+                <Input
+                  type="password"
+                  autoComplete="new-password"
+                  value={form.pppoePassword}
+                  onChange={(e) => set("pppoePassword", e.target.value)}
+                  className="bg-background border-border text-foreground"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Stored encrypted on the server. The encryption key must be configured before credentials can be saved.
+                </p>
+              </div>
+            </>
+          )}
+
+          {form.connectionType === "hotspot" && (
+            <>
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">Hotspot Username *</Label>
+                <Input
+                  autoComplete="username"
+                  value={form.hotspotUsername}
+                  onChange={(e) => set("hotspotUsername", e.target.value)}
+                  className="bg-background border-border text-foreground"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">
+                  Hotspot Password {editId ? "(leave blank to keep current)" : "*"}
+                </Label>
+                <Input
+                  type="password"
+                  autoComplete="new-password"
+                  value={form.hotspotPassword}
+                  onChange={(e) => set("hotspotPassword", e.target.value)}
+                  className="bg-background border-border text-foreground"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Stored encrypted on the server. Configure the Hotspot to use a PAP-compatible
+                  RADIUS login method; this integration does not support CHAP/MS-CHAP.
+                </p>
+              </div>
+            </>
+          )}
 
           {/* Package */}
           <div className="space-y-1.5">
@@ -241,7 +403,7 @@ export default function SubscriberFormDialog({ open, onClose, editId }: Props) {
               </SelectTrigger>
               <SelectContent className="bg-card border-border">
                 <SelectItem value="none">No Package</SelectItem>
-                {(packages ?? []).map((pkg) => (
+                {(packages ?? []).filter((pkg) => pkg.type === form.connectionType).map((pkg) => (
                   <SelectItem key={pkg._id} value={pkg._id}>
                     {pkg.name} — Ksh {pkg.price.toLocaleString()}
                   </SelectItem>

@@ -7,7 +7,18 @@ import { requireWorkspaceRole } from "./model/workspace";
 const readRoles = ["owner", "admin", "billing", "network", "read_only"] as const;
 const writeRoles = ["owner", "admin", "billing"] as const;
 const packageDoc = schema.doc("packages");
-const subscriberDoc = schema.doc("subscribers").omit("pppoeUsername", "pppoePassword");
+const subscriberDoc = schema
+  .doc("subscribers")
+  .omit(
+    "pppoeUsername",
+    "pppoePassword",
+    "pppoePasswordCiphertext",
+    "pppoePasswordIv",
+    "hotspotUsername",
+    "hotspotPassword",
+    "hotspotPasswordCiphertext",
+    "hotspotPasswordIv",
+  );
 const packageWithCount = packageDoc.extend({ subscriberCount: v.number() });
 const packageWithSubscribers = packageWithCount.extend({
   subscribers: v.array(subscriberDoc),
@@ -85,7 +96,17 @@ export const getById = query({
     return {
       ...pkg,
       subscriberCount: assigned.length,
-      subscribers: subscribers.map(({ pppoeUsername: _username, pppoePassword: _password, ...sub }) => sub),
+      subscribers: subscribers.map(({
+        pppoeUsername: _username,
+        pppoePassword: _password,
+        pppoePasswordCiphertext: _ciphertext,
+        pppoePasswordIv: _iv,
+        hotspotUsername: _hotspotUsername,
+        hotspotPassword: _hotspotPassword,
+        hotspotPasswordCiphertext: _hotspotCiphertext,
+        hotspotPasswordIv: _hotspotIv,
+        ...sub
+      }) => sub),
     };
   },
 });

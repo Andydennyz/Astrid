@@ -1,0 +1,224 @@
+Astrid ISP Billing System - Milestone Reference
+=============================================
+
+This file is a working reference for the milestones we have completed, what each milestone covered, and what remains to be built.
+
+
+Milestone 1 - System Design and Foundation
+Status: Completed
+What we covered:
+- Defined the overall architecture for the billing system.
+- Planned the ISP stack around RouterOS (MikroTik CHR), WireGuard, FreeRADIUS, and Convex-based app logic.
+- Clarified the intended flow: RouterOS devices connect to the lab, FreeRADIUS handles authentication, and the billing platform manages router onboarding and operational control.
+- Set the direction for the project: start small in a controlled lab, validate each segment before production-like rollout.
+Expected outcome:
+- A clear project path and correct sequencing of lab setup before live deployment.
+
+
+Milestone 2 - Workspace Membership, Roles, and Scoped Access
+Status: Completed
+What we covered:
+- Built workspace-level membership and access control.
+- Implemented role checks and workspace-scoped data access.
+- Added invitations and workspace isolation logic.
+- Scoped UI and backend operations so data is restricted to the correct workspace.
+- Verified that users, invitations, and router-related records remain isolated by workspace.
+Expected outcome:
+- A secure multi-tenant foundation for the application where each workspace only sees its own data.
+
+
+Milestone 3 - Secure Router Enrollment
+Status: Completed - secure app-side enrollment and router activation
+What we covered:
+- Added secure router enrollment flow for new devices.
+- Created enrollment records with time-limited tokens and revocation logic.
+- Hash-based token validation and expiry handling.
+- Bound the router's public WireGuard key to the enrollment after user approval.
+- Added RouterOS v7 script generation to create the temporary enrollment interface and print the public key.
+- Added UI and backend logic that supports redeeming tokens with the device public key.
+- Kept private keys off the server; RouterOS generates and retains its own private key.
+- Added state handling for pending, expired, revoked, and redeemed enrollments.
+- Added validation for key format and duplicate public key checks.
+- Removed the legacy direct-add router mutation and its obsolete UI component so routers are enrolled through the secure flow.
+- Redemption now atomically creates the workspace-scoped router record and links it to the enrollment.
+- Generated a deterministic NAS-Identifier from the router public key and a cryptographically random RADIUS shared secret.
+- The shared secret is displayed once in the enrollment dialog; only its SHA-256 hash is stored in Convex and it is excluded from router queries.
+- Redemption is retry-safe when the client repeats the same token, key, and secret after a transient response failure.
+- Router records can exist before their WireGuard addressing is provisioned; the router remains in an unknown state until later setup.
+- Router private keys are optional only for compatibility with older records and are never accepted or created by the secure enrollment flow.
+- Lab-side installation of RADIUS credentials and WireGuard provisioning are deferred to the later integration milestones.
+Expected outcome:
+- A safe and traceable onboarding path for routers without exposing private keys to the app.
+
+
+Milestone 4 - WireGuard Lab Tunnel and Secure Connectivity
+Status: Completed
+What we covered:
+- Set up the Ubuntu lab server as a WireGuard endpoint.
+- Created the wg0 interface and confirmed public key generation.
+- Assigned the WireGuard server address range (10.77.0.0/24) and brought the tunnel online.
+- Confirmed the CHR router could join the same WireGuard network.
+- Confirmed the server side was listening on the correct address and port.
+- Installed and configured FreeRADIUS on the Ubuntu lab server.
+- Added a CHR client entry in FreeRADIUS clients.conf using the WireGuard address and shared secret.
+- Validated FreeRADIUS config successfully with freeradius -XC.
+- Enabled FreeRADIUS service and confirmed listeners on WireGuard address 10.77.0.1:1812 and 1813.
+- Demonstrated a successful freeRADIUS test using radtest with a test user and secret.
+- Confirmed a successful CHR-to-server RADIUS exchange by checking /radius monitor on CHR.
+Expected outcome:
+- Secure RADIUS transport over WireGuard, with the Ubuntu lab server acting as the authentication backend.
+
+
+Milestone 5 - FreeRADIUS Foundation and Authentication Validation
+Status: Completed
+What we covered:
+- Completed the core FreeRADIUS service setup.
+- Validated that the FreeRADIUS configuration is clean and active.
+- Confirmed the listening sockets are active only on the WireGuard endpoint.
+- Added and tested a temporary local RADIUS user and secret.
+- Verified Access-Accept response from the server.
+- Confirmed the CHR reports requests and accepts with zero timeouts.
+- Kept RouteOS user-login RADIUS disabled during validation to avoid confusion with local SSH login issues.
+- Established that the problem previously seen was not a core WireGuard/RADIUS transport issue, but a separate/device-side session or user-login configuration issue.
+Expected outcome:
+- FreeRADIUS is ready as the backend for PPPoE, HotSpot, and other RouterOS-authenticated services.
+
+
+Milestone 6 - PPPoE Provisioning on RouterOS
+Status: Application implementation complete; lab integration deferred to round two
+What we covered:
+- Investigated the clean CHR state before enabling PPPoE.
+- Confirmed the CHR has no pre-existing PPPoE server, profiles, or pools.
+- Decided to start with PPPoE first, then HotSpot after that works.
+- Created the second CHR VM to use as the PPPoE client.
+- Chose a safe lab method: connect the client and server CHRs over a VirtualBox Internal Network, not a production or home network.
+- Defined the test topology to keep all subscriber traffic isolated.
+Application work completed so far:
+- Added subscriber create/edit UI for PPPoE credentials and enforced workspace-wide username uniqueness.
+- Added AES-GCM encryption for new PPPoE passwords at rest. The password and ciphertext are excluded from client-facing queries; credential changes clear the legacy plaintext field.
+- Added an internal PPPoE authorization decision that requires matching credentials, an active subscriber, an active PPPoE package, and the same workspace as the NAS router.
+- Added indexed subscriber username lookup for the RADIUS authorization path.
+- Added authenticated HTTP endpoints for PPPoE authorization/authentication and accounting. They require a dedicated bearer token and fail closed when server environment variables are missing.
+- The HTTP endpoints accept FreeRADIUS 3.x `rlm_rest` JSON attribute objects (including NAS-Identifier, User-Name, User-Password, Acct-Status-Type, and accounting counters); legacy flat JSON requests remain supported.
+- Authorization replies use FreeRADIUS REST response attributes: `control:Auth-Type`, `reply:Reply-Message`, `reply:Mikrotik-Rate-Limit`, and optional `reply:Framed-IP-Address`. Rate limits map package upload/download Mbps to RouterOS rx/tx order.
+- The `/authorize` and `/authenticate` endpoints share PPPoE credential verification; the provided REST setup uses the authorize endpoint and expects PAP/User-Password. CHAP/MS-CHAP are not supported by this bridge.
+- Accounting requests normalize Start, Interim-Update, and Stop events and map the standard RADIUS session/time/traffic attributes into router sessions.
+- Accounting requests now create/update router sessions and RADIUS logs; stopped sessions cannot be reopened by delayed interim updates.
+- Added tests for encrypted credential storage/privacy, accepted and rejected authorization, workspace isolation, authenticated HTTP requests, accounting writes, and stale updates.
+- Removed the disconnected legacy router-add UI component that referenced the removed insecure creation flow.
+Deferred configuration and round-two validation:
+- Configure `PPPOE_CREDENTIAL_ENCRYPTION_KEY` (base64 encoding of exactly 32 random bytes) and `RADIUS_GATEWAY_TOKEN` (at least 32 random characters) as server-only Convex environment variables. Do not put either value in Vite/browser variables or source control.
+- Keep the credential encryption key backed up and stable; changing it without re-encrypting subscriber credentials will make those credentials unusable.
+- Validate and install the displayed FreeRADIUS 3.x REST template on the Ubuntu VM, configure the matching server-only Convex secrets, and test PAP authorization and accounting end-to-end. No live FreeRADIUS-to-Convex request has yet been verified.
+- Configure the generated one-time NAS-Identifier and shared secret in the lab FreeRADIUS client entry and RouterOS when the integration phase begins. The application does not configure either VM yet.
+- Add an administrative secret-rotation flow before production use; the one-time secret cannot be recovered from Convex after the dialog is closed.
+- Exercise the existing sessions and RADIUS log UI against real accounting requests; no live FreeRADIUS-to-Convex connection has been verified.
+Lab work to perform after application components are ready:
+- Connect both CHR devices on the same Internal Network (for example: Astrid-PPPoE-Lab).
+- Validate the client can see the server over the isolated lab link.
+- Configure the CHR server's PPPoE interface and service.
+- Create a dedicated PPPoE profile and IP pool for subscribers.
+- Turn on the PPPoE server on the correct interface.
+- Test a real PPPoE session and confirm a successful authentication path and a live IP assignment.
+- Ensure no NAT or production paths are impacted.
+Expected outcome:
+- A working PPPoE service that authenticates through FreeRADIUS and assigns IPs correctly in the lab.
+
+
+Milestone 7 - RouterOS API, Management Gateway, and Automation Layer
+Status: Application-side setup preparation complete; live gateway integration deferred to round two
+What we decided:
+- Use the Ubuntu WireGuard gateway address 10.77.0.1 as the management source in the lab; keep production configuration separate.
+- Use RouterOS API-SSL on TCP 8729, a dedicated API user, source-IP restrictions, and certificate validation.
+Application work completed:
+- Added a RouterOS v7 API-SSL setup generator requiring a previously installed, trusted certificate and disabling the unencrypted API service.
+- The generated API user and API-SSL service are restricted to the chosen gateway source IPv4 /32; the script does not rewrite firewall rules.
+- Added a router-card workflow that generates a one-time password, displays/copies the setup script, and records only non-secret metadata plus a script SHA-256 fingerprint in Convex.
+- Restricted setup creation and status updates to workspace owner/admin/network roles, and scoped setup reads and writes to the owning workspace/router.
+- Added operator-applied tracking, clearly identified as a manual assertion rather than proof of gateway connectivity.
+Deferred configuration and round-two validation:
+- Install and validate the router's TLS certificate and confirm the Ubuntu gateway trusts its issuing CA and validates the management address.
+- Configure and test the Ubuntu-side API client over WireGuard, including API-SSL certificate validation and RouterOS API commands.
+- Do not treat “operator applied” or the stored script fingerprint as proof that the script ran or the gateway connected.
+- The one-time API password and script are not stored in Convex; closing the setup dialog loses the displayed credential, so prepare a replacement credential if it is lost.
+Expected outcome:
+- A secure, well-scoped RouterOS management setup; actual remote API operations will be verified in the later integration round.
+
+
+Milestone 8 - HotSpot Provisioning and Subscriber Access
+Status: Application-side HotSpot credentials and RADIUS flow implemented; CHR configuration and integration deferred to round two
+Credential model chosen:
+- Use a separate HotSpot username and password per subscriber; do not reuse PPPoE credentials.
+- Voucher accounts were not selected and are not included in this milestone.
+Application work completed:
+- Added encrypted HotSpot credential fields using the existing server-only AES-GCM credential key. The key now protects both PPPoE and HotSpot credentials.
+- Added create/edit flows in the subscriber form and onboarding. HotSpot subscribers require a distinct username/password and a matching HotSpot package.
+- Added server-side credential uniqueness checks across PPPoE and HotSpot usernames within each workspace, and kept password/ciphertext/IV out of client-facing subscriber, package, billing, and ticket projections.
+- Added service-aware RADIUS authentication: `Service-Type=Login-User` selects HotSpot, `Framed-User` selects PPPoE, and the bridge can infer a service from a unique workspace username if Service-Type is absent.
+- HotSpot authorization requires active subscriber status, matching router/workspace, matching active HotSpot package, and valid credentials; the same package rate attributes are returned.
+- HotSpot RADIUS accounting is linked to the correct subscriber and stored as a HotSpot session with Calling-Station-Id/Called-Station-Id when supplied.
+- Updated the FreeRADIUS REST setup guidance to describe service selection and the PAP-only credential requirement.
+Deferred configuration and round-two validation:
+- Configure an isolated HotSpot network, server/profile, address pool, and captive portal on the CHR.
+- Configure its login method to send PAP-compatible credentials over a protected portal path; CHAP/MS-CHAP are not supported by the current REST credential bridge.
+- Confirm RouterOS sends the expected Service-Type and accounting attributes, then test authentication, rate limits, session start/interim/stop, and subscriber/session UI against FreeRADIUS and the CHR.
+Expected outcome:
+- Both services are implemented in the application-side RADIUS flow; after round-two CHR/FreeRADIUS configuration, they can be verified end-to-end and tracked by the billing app.
+
+
+Milestone 9 - End-to-End Billing and Router Onboarding Workflow
+Status: Application-side workflow implemented; lab integration and backup/restore verification remain
+Architecture choices:
+- Use workspace-wide RADIUS: subscribers are not fixed to one router; accounting records the router that serves each session.
+- Use a Convex-backed operation handoff for the Ubuntu WireGuard gateway agent; never have the Convex app connect directly to private RouterOS addresses.
+- Add a backup/restore runbook in the application phase; perform a real snapshot/restore drill during integration testing.
+What we need to cover:
+- Integrate user onboarding, plans, router associations, and billing records.
+- Link the app to the FreeRADIUS and RouterOS configuration layer.
+- Build a clean workflow for creating service profiles, assigning routers, and provisioning subscriber access.
+- Create a safe operational backup/rollback process.
+Application work completed so far:
+- Added an optional initial invoice to the first-subscriber onboarding flow. When selected, the invoice is created atomically with the subscriber and uses the subscriber's monthly fee.
+- Validated that an invalid initial invoice rolls back subscriber creation; a valid onboarding invoice is created pending and audited.
+- Made completed payment transactions consistently affect subscriber balance and invoice status. Transaction status changes and deletion now reverse ledger effects exactly once; invoice-linked transactions must be full payments, and cancelled or already-paid invoices are rejected.
+- Added focused coverage for full-invoice validation, transaction completion/reversal/deletion, and payment recording through the invoice workflow.
+- Router enrollment generates matching manual RouterOS RADIUS and FreeRADIUS client snippets from validated tunnel/server IPv4 addresses. The scripts share the one-time secret, require FreeRADIUS Message-Authenticator, bind the RouterOS NAS-Identifier, and optionally enable PPP/PPPoE and HotSpot RADIUS accounting.
+- Added an operator-reviewed PPPoE service script generator for the pool, default PPP profile, and PPPoE server. It validates IPv4 inputs, checks managed-resource collisions before writes, restricts authentication to PAP, and enables five-minute RADIUS accounting.
+- Added an operator-reviewed HotSpot service script generator for the address pool, HTTPS-only RADIUS profile, and HotSpot server. It validates its interface/address/pool/DNS/certificate inputs, checks managed-resource collisions before writes, and requires the gateway address and matching TLS certificate to exist before running.
+- Both service scripts are manual-copy artifacts: neither configures WireGuard, interface addressing, DHCP, firewall/NAT, or upstream routing. The HotSpot portal certificate must be trusted by clients; live RouterOS behavior remains unverified.
+- Added activation readiness checks so PPPoE/HotSpot subscribers cannot be activated without encrypted credentials and a matching active package. Static-subscriber behavior is unchanged, and the UI shows backend readiness errors.
+- Added a workspace-scoped Ubuntu gateway credential flow. The gateway receives a one-time token; Convex stores only its SHA-256 hash, and rotation invalidates the previous token.
+- Added a Convex-backed operation handoff for read-only API-SSL connectivity verification. Only manually applied setup records can be queued; operations use expiring claims, expose no RouterOS password, and report success/failure through authenticated HTTP endpoints.
+- Added router UI to configure gateway credentials, queue verification, and view operation status. This is an application protocol only; no Ubuntu worker has been installed or tested.
+- Added a dependency-free Python 3.10+ gateway worker that polls and completes those operations, binds the configured WireGuard source address, and validates RouterOS API-SSL certificates using the system or configured CA bundle.
+- Added worker unit tests, a secret-free example configuration, and a hardened systemd unit template. The worker keeps API passwords in its local config and never sends them to Convex.
+- Local validation passed: 49 Vitest tests, ESLint on changed TypeScript/React files, `npx tsc --noEmit`, and `npm run build`. The build still reports dependency annotation and large-chunk warnings. The 3 Python gateway worker tests passed in the earlier worker implementation.
+Remaining work:
+- Install the gateway worker on the Ubuntu VM with an unprivileged service account and mode-0600 local configuration, then validate tunnel routing, CA trust, and the complete operation lifecycle in the integration round.
+- With explicit authorization, configure RouterOS WireGuard peer/address setup and required interface addressing, DHCP, firewall/NAT, and upstream routing; then apply and verify the generated RADIUS, PPPoE, and HotSpot configurations on the isolated lab devices.
+- Rehearse backup restoration in the isolated integration environment; no snapshot or restore was run during application development.
+Backup and rollback runbook:
+- Before any schema or application deployment, confirm the target environment and take a named Convex snapshot; record its deployment, timestamp, and the code revision being deployed.
+- Keep RouterOS exports/backups and gateway credentials encrypted in an access-controlled location outside source control. RouterOS exports may contain secrets.
+- Validate changes with tests and a preview/dev deployment first. Production deployment or restore requires explicit approval and a reviewed rollback impact.
+- If an application release fails, roll back the application code to the last known-good revision. Do not assume this reverses database writes or schema changes.
+- Before restoring data, rehearse the snapshot in an isolated preview and verify representative workspace, subscriber, package, invoice, router, session, and audit records. Never restore a production snapshot directly over production as a routine rollback.
+- For a live data incident, preserve the current state, estimate data loss since the snapshot, and obtain explicit approval before restoring; record the restore point and post-restore checks.
+- The gateway operation API uses `POST /api/router-gateway/operations/claim` with a workspace ID and bearer token, then `POST /api/router-gateway/operations/complete` with the operation ID, lease token, and result. Lease tokens are short-lived; operation completion must not include credentials or other secrets.
+- The gateway worker files are under `gateway/`. `config.example.json` contains placeholders only; never put live gateway/API credentials in the repository. The systemd unit is a template and was not installed on the VM.
+Expected outcome:
+- A full, working ISP billing and provisioning system in the lab.
+
+
+Current Working Priority
+- M9 application-side billing, router service setup scripts, and subscriber activation readiness are implemented. Keep VM/FreeRADIUS/CHR changes and end-to-end tests in the planned round-two integration phase; the milestone remains open until integration and backup/restore rehearsal are verified.
+- The lab is currently stable enough to continue: WireGuard tunnel and FreeRADIUS are connected and verified.
+- The client CHR VM has been created. Configure the isolated link and run end-to-end PPPoE tests after the application and gateway components are ready.
+
+Important Notes
+- Do not deploy any database or production configuration changes without explicit confirmation.
+- Keep all lab work isolated to the test environment.
+- Continue to validate before expanding the scope.
+- Use temporary test credentials only when necessary and remove them when the test succeeds.
+- Preserve the working reference files for troubleshooting and future milestone continuation.
+- New PPPoE passwords are encrypted only when the server encryption key is configured. Existing legacy plaintext credential records should be reset through the new workflow before they are considered usable.
