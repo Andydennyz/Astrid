@@ -152,7 +152,7 @@ Round-two starting inventory (2026-10-16):
 - M3 Round 2 is passed for the app-side secure enrollment. WireGuard tunnel, RADIUS, subscriber service, and session integration remain open for their scheduled milestones.
 
 M4 (Round 2) - Reverify WireGuard Connectivity
-Status: In progress - M3 router is visible; verifying current lab peer/address state before M4 configuration
+Status: Passed (2026-10-17) - CHR enrollment router has an active WireGuard tunnel with bidirectional reachability
 Practical scope:
 - Reverify Ubuntu `wg0`, WireGuard service state, UDP listener, and current peer handshake before changing configuration.
 - Configure the enrolled CHR as a peer using the private key retained on CHR; do not export or share private key material.
@@ -165,10 +165,12 @@ Round-two starting evidence (2026-10-16):
 - Earlier notes recorded Ubuntu `wg0` at `10.77.0.1/24` and a peer allowed `10.77.0.2/32`, but no round-two handshake/transfer evidence; treat that setup as an unverified baseline.
 - Operator-reported read-only baseline (2026-10-16): Ubuntu `wg0` is `10.77.0.1/24`; `wg-quick@wg0` reports active; UDP/51820 is listening on IPv4 and IPv6. The latest read-only terminal check still shows this baseline. `sudo wg show` peer handshake/transfer output was not obtained because sudo was waiting for local authentication; do not provide the password in chat.
 - Operator-reported CHR read-only baseline (2026-10-16): `wg-astrid-enrollment` is running and listening on UDP/48073, with no IP address assigned and no peers configured. The operator confirmed the CHR public key exists and intentionally removed its value from chat. No private keys were shared, and no configuration changes have been made.
-- The operator compared keys locally and confirmed Ubuntu's existing WireGuard peer key matches the enrolled CHR public key; no key values were shared.
+- The operator initially believed the Ubuntu peer key matched the enrolled CHR public key; the later successful handshake occurred only after correcting the Ubuntu peer key, showing the original value was mismatched. No key values were recorded here.
 - Current host verification (2026-10-16): `Astrid-WireGuard-Lab` and `Astrid-CHR-R2` are both running; CHR remains on host-only management plus `Astrid-PPPoE-Lab` internal network, Ubuntu remains on NAT plus host-only; SSH TCP/22 is reachable at `192.168.56.101` and `192.168.56.103`. Host free memory is 3.3 GB. PPPoE client remains off.
 - Operator-reported read-only CHR check: no IP address is assigned to `wg-astrid-enrollment`, and the WireGuard peer count is `0`. The Ubuntu peer/handshake detail remains unverified in this turn because sudo authentication was not completed. Do not expose public/private keys or shared secrets in chat.
-- The operator-approved CHR-side address/peer change remains unapplied. Next configure only the CHR with `10.77.0.2/24` and an Ubuntu peer targeting host-only `192.168.56.101:51820`, allowing `10.77.0.1/32` with keepalive, using Ubuntu's public key copied locally and never pasted into chat. Then verify handshake, ping, and transfer counters.
+- At the starting baseline, the operator-approved CHR-side address/peer change was unapplied. The CHR was subsequently configured with `10.77.0.2/24` and a peer targeting host-only `192.168.56.101:51820`, allowing `10.77.0.1/32` with keepalive. The Ubuntu peer key was corrected locally; no key values are recorded here.
+- Completion evidence (2026-10-17): after correcting Ubuntu's CHR peer public key, Ubuntu reported nonzero latest-handshake timestamps and transfer counters increasing from `212/92` to `840/472` bytes. CHR pinged Ubuntu at `10.77.0.1` from source `10.77.0.2` with 3/3 replies; Ubuntu pinged CHR at `10.77.0.2` with 3/3 replies and 0% packet loss. The host-only path was also confirmed by CHR pinging `192.168.56.101` with 3/3 replies. No private keys were shared. RADIUS testing remains outside this M4 verification and in its scheduled milestone.
+- RADIUS preflight (2026-10-17): Ubuntu FreeRADIUS config check passed; service was started and confirmed active with UDP listeners on `10.77.0.1:1812` and `10.77.0.1:1813`. Ubuntu `clients.conf` contains a client entry for CHR tunnel IP `10.77.0.2`; no secret was displayed. CHR `/radius print count-only` returned `0`, so no CHR RADIUS entry or live CHR-originated RADIUS request was verified. The one-time enrollment RADIUS secret was lost; the app stores only its hash, so do not assume the existing Ubuntu client secret matches the enrollment credential. Per operator choice, keep RouterOS login RADIUS disabled and defer live CHR RADIUS authentication to the PPPoE integration milestone, reconciling credentials locally before the test.
 
 Milestone 4 - WireGuard Lab Tunnel and Secure Connectivity
 Status: Completed
@@ -349,7 +351,7 @@ Dependency:
 
 Current Working Priority
 - Round 2 M1, M2, and M3 are passed. M3 router `astrid` is confirmed visible in the selected test workspace with `Unknown` status, as expected before tunnel setup.
-- M4 Round 2 is in progress: verify read-only Ubuntu/CHR tunnel state before applying the previously approved CHR-side configuration. Both lab VMs are running, host free memory is about 3.3 GB, and the PPPoE client remains off.
+- M4 Round 2 is passed: WireGuard handshake and transfer counters are active, and CHR-to-Ubuntu plus Ubuntu-to-CHR tunnel pings each succeeded with 0% packet loss. Continue with the next pending round-two integration item; keep RADIUS testing in its scheduled milestone. Both lab VMs are running, host free memory was about 3.3 GB, and the PPPoE client remains off.
 - Use the isolated lab with tuned guest RAM and close host applications before concurrent integration tests; recheck host memory before starting multiple guests.
 - M9 application-side billing, router service setup scripts, and subscriber activation readiness are implemented. Keep VM/FreeRADIUS/CHR changes and end-to-end tests in the planned round-two integration phase; the milestone remains open until integration and backup/restore rehearsal are verified.
 - M10 is the final planned milestone: complete production readiness, launch, and operational handover after M9 round-two integration is verified. No production deployment is authorized by this roadmap entry.
