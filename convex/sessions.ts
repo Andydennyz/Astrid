@@ -114,13 +114,22 @@ export const getActiveSummary = query({
       "network",
       "read_only",
     ]);
-    const fetched = await ctx.db
-      .query("router_sessions")
-      .withIndex("by_workspace_and_status", (index) =>
-        index.eq("workspaceId", args.workspaceId).eq("status", "active"),
-      )
-      .take(1001);
-    const sessions = fetched.slice(0, 1000);
+    const [activeSessions, interimSessions] = await Promise.all([
+      ctx.db
+        .query("router_sessions")
+        .withIndex("by_workspace_and_status", (index) =>
+          index.eq("workspaceId", args.workspaceId).eq("status", "active"),
+        )
+        .take(1001),
+      ctx.db
+        .query("router_sessions")
+        .withIndex("by_workspace_and_status", (index) =>
+          index.eq("workspaceId", args.workspaceId).eq("status", "interim"),
+        )
+        .take(1001),
+    ]);
+    const fetchedCount = activeSessions.length + interimSessions.length;
+    const sessions = [...activeSessions, ...interimSessions].slice(0, 1000);
     const counts = new Map<string, { routerId?: Id<"routers">; count: number }>();
     for (const session of sessions) {
       const key = session.routerId ?? "unassigned";
@@ -137,7 +146,7 @@ export const getActiveSummary = query({
         };
       }),
     );
-    return { total: sessions.length, byRouter, truncated: fetched.length > 1000 };
+    return { total: sessions.length, byRouter, truncated: fetchedCount > 1000 };
   },
 });
 

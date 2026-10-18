@@ -21,6 +21,7 @@ describe("router RADIUS setup scripts", () => {
     expect(script).toContain("service=ppp authentication-port=1812 accounting-port=1813");
     expect(script).toContain("/ppp aaa set use-radius=yes accounting=yes interim-update=5m");
     expect(script).toContain("/system identity set name=$nasIdentifier");
+    expect(script).toContain("accounting-port=1813 timeout=3s");
     expect(script).not.toContain("/ip hotspot profile set");
     expect(script).toContain(`:local radiusServer "${credentials.radiusServerAddress}"`);
     expect(script).toContain(`:local radiusSecret "${credentials.radiusSecret}"`);

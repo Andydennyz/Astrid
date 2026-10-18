@@ -88,9 +88,9 @@ ${services.hotspot ? `:local hotspotProfiles [/ip hotspot profile find]
 }
 ` : ""}/system identity set name=$nasIdentifier
 :if ([:len $astridRadiusEntries] = 0) do={
-  /radius add address=$radiusServer src-address=$routerTunnelAddress secret=$radiusSecret service=${radiusServices} authentication-port=1812 accounting-port=1813 timeout=1s comment="Astrid workspace-wide RADIUS"
+  /radius add address=$radiusServer src-address=$routerTunnelAddress secret=$radiusSecret service=${radiusServices} authentication-port=1812 accounting-port=1813 timeout=3s comment="Astrid workspace-wide RADIUS"
 } else={
-  /radius set $astridRadiusEntries address=$radiusServer src-address=$routerTunnelAddress secret=$radiusSecret service=${radiusServices} authentication-port=1812 accounting-port=1813 timeout=1s disabled=no
+  /radius set $astridRadiusEntries address=$radiusServer src-address=$routerTunnelAddress secret=$radiusSecret service=${radiusServices} authentication-port=1812 accounting-port=1813 timeout=3s disabled=no
 }
 ${pppSetup}${hotspotSetup}
 

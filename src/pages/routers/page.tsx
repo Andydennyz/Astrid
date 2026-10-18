@@ -1,10 +1,28 @@
 import { useState } from "react";
-import { useQuery, useMutation } from "convex/react";
+import { useAction, useQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
 import { useWorkspace } from "@/components/providers/workspace.tsx";
 import { Authenticated, Unauthenticated } from "convex/react";
 import { SignInButton } from "@/components/ui/signin.tsx";
 import { Button } from "@/components/ui/button.tsx";
+import { Input } from "@/components/ui/input.tsx";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog.tsx";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog.tsx";
 import {
   Card,
   CardContent,
@@ -29,6 +47,8 @@ import {
   WifiOff,
   Wifi,
   Trash2,
+  RotateCw,
+  Copy,
   MapPin,
   Cpu,
   ShieldCheck,
@@ -38,10 +58,11 @@ import {
 import type { Doc, Id } from "@/convex/_generated/dataModel.d.ts";
 import RouterEnrollment from "./_components/router-enrollment.tsx";
 import RouterManagementSetup from "./_components/router-management-setup.tsx";
+import RouterNetworkAddressDialog from "./_components/router-network-address-dialog.tsx";
 import RouterGatewayCredentials from "./_components/router-gateway-credentials.tsx";
 import RouterFeatureBoundary from "./_components/router-feature-boundary.tsx";
 
-type PublicRouter = Omit<Doc<"routers">, "privateKey" | "presharedKey" | "radiusSecret">;
+type PublicRouter = Omit<Doc<"routers">, "privateKey" | "presharedKey" | "radiusSecret" | "radiusSecretHash">;
 
 function StatusBadge({ status }: { status: Doc<"routers">["status"] }) {
   if (status === "online") return <Badge className="bg-green-500/15 text-green-400 border-green-500/30">Online</Badge>;
@@ -57,10 +78,52 @@ function RouterCard({
   onDelete: (id: Id<"routers">) => void;
 }) {
   const { selectedWorkspaceId: workspaceId } = useWorkspace();
+  const [rotationSecret, setRotationSecret] = useState<string | null>(null);
+  const [confirmRotation, setConfirmRotation] = useState(false);
+  const [isRotating, setIsRotating] = useState(false);
+  const rotateRadiusSecret = useAction(
+    api.routerEnrollments.rotateRadiusSecret,
+  );
   const stats = useQuery(
     api.routers.getStats,
     workspaceId ? { workspaceId, routerId: router._id } : "skip",
   );
+
+  const handleRotateRadiusSecret = async () => {
+    if (!workspaceId || isRotating) return;
+    setConfirmRotation(false);
+    setIsRotating(true);
+    try {
+      const { radiusSecret } = await rotateRadiusSecret({
+        workspaceId,
+        routerId: router._id,
+      });
+      setRotationSecret(radiusSecret);
+      toast.success("RADIUS secret rotated");
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? `Could not rotate the RADIUS secret: ${error.message}`
+          : "Could not rotate the RADIUS secret",
+      );
+    } finally {
+      setIsRotating(false);
+    }
+  };
+
+  const handleCopyRotationSecret = async () => {
+    if (!rotationSecret) return;
+    try {
+      await navigator.clipboard.writeText(rotationSecret);
+      toast.success("New RADIUS secret copied");
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? `Could not copy the new RADIUS secret: ${error.message}`
+          : "Could not copy the new RADIUS secret",
+      );
+    }
+  };
 
   const formatBytes = (bytes: number) => {
     if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
@@ -91,6 +154,13 @@ function RouterCard({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  disabled={isRotating}
+                  onClick={() => setConfirmRotation(true)}
+                  className="cursor-pointer"
+                >
+                  <RotateCw className="w-4 h-4 mr-2" /> Rotate RADIUS Secret
+                </DropdownMenuItem>
                 <DropdownMenuItem
                   onClick={() => onDelete(router._id)}
                   className="text-destructive cursor-pointer"
@@ -125,9 +195,13 @@ function RouterCard({
           )}
           <div className="flex items-center gap-1.5">
             <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
-            <span className="font-mono">{router.tunnelIp}</span>
+            <span className="font-mono">
+              {router.tunnelIp ?? "Tunnel IP not set"}
+            </span>
           </div>
         </div>
+
+        <RouterNetworkAddressDialog router={router} />
 
         <RouterFeatureBoundary feature="Router management setup">
           <RouterManagementSetup router={router} />
@@ -158,6 +232,75 @@ function RouterCard({
           </p>
         )}
       </CardContent>
+      <AlertDialog
+        open={confirmRotation}
+        onOpenChange={setConfirmRotation}
+      >
+        <AlertDialogContent
+          className="border-border bg-card"
+          onEscapeKeyDown={(event) => event.preventDefault()}
+        >
+          <AlertDialogHeader>
+            <AlertDialogTitle>Rotate RADIUS secret?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Rotation immediately invalidates the current shared secret. New
+              PPPoE/Hotspot authentication and RADIUS accounting can fail until
+              both the CHR PPP RADIUS entry and Ubuntu FreeRADIUS client
+              configuration are updated. The new secret will be shown once;
+              save it securely. Continue only if both systems are ready to
+              update.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isRotating}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={isRotating}
+              onClick={(event) => {
+                event.preventDefault();
+                void handleRotateRadiusSecret();
+              }}
+            >
+              {isRotating ? "Rotating..." : "Rotate secret"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <Dialog
+        open={rotationSecret !== null}
+        onOpenChange={(open) => {
+          if (!open) setRotationSecret(null);
+        }}
+      >
+        <DialogContent
+          onEscapeKeyDown={(event) => event.preventDefault()}
+          onInteractOutside={(event) => event.preventDefault()}
+        >
+          <DialogHeader>
+            <DialogTitle>New RADIUS secret for {router.name}</DialogTitle>
+            <DialogDescription>
+              This secret is shown only once. The previous secret is already
+              invalid. Update both the CHR PPP RADIUS client and the Ubuntu
+              FreeRADIUS client before the next authentication or accounting
+              request.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex gap-2">
+            <Input
+              aria-label="One-time RADIUS secret"
+              autoComplete="off"
+              className="font-mono"
+              readOnly
+              value={rotationSecret ?? ""}
+            />
+            <Button onClick={() => void handleCopyRotationSecret()}>
+              <Copy className="mr-2 h-4 w-4" />
+              Copy
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

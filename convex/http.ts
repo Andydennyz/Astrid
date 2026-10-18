@@ -342,8 +342,7 @@ const recordAccounting = httpAction(async (ctx, request) => {
   const normalizedStartTime =
     startTime ??
     new Date(Date.now() - (sessionTime ?? 0) * 1000).toISOString();
-  const status =
-    event === "stop" ? "stopped" : event === "interim" ? "interim" : "active";
+  const status = event === "stop" ? "stopped" : "active";
   const accountingAttrs = {
     service: connectionType,
     status: event,

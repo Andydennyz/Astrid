@@ -162,7 +162,7 @@ function SessionsInner() {
                         {new Date(s.startTime).toLocaleString()}
                       </TableCell>
                       <TableCell>
-                        {s.status === "active" && (
+                        {s.status !== "stopped" && (
                           <Button
                             variant="ghost"
                             size="icon"

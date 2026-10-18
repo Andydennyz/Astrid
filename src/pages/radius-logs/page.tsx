@@ -29,7 +29,11 @@ import {
 } from "@/components/ui/collapsible.tsx";
 import { ShieldCheck, RefreshCw, ChevronDown } from "lucide-react";
 
-function TypeBadge({ type }: { type: "authorize" | "authenticate" | "accounting" }) {
+function TypeBadge({
+  type,
+}: {
+  type: "authorize" | "authenticate" | "accounting";
+}) {
   const map = {
     authorize: "bg-blue-500/15 text-blue-400 border-blue-500/30",
     authenticate: "bg-purple-500/15 text-purple-400 border-purple-500/30",
@@ -39,15 +43,33 @@ function TypeBadge({ type }: { type: "authorize" | "authenticate" | "accounting"
 }
 
 function ResponseBadge({ code }: { code: "accept" | "reject" | "error" }) {
-  if (code === "accept") return <Badge className="bg-green-500/15 text-green-400 border-green-500/30">Accept</Badge>;
-  if (code === "reject") return <Badge className="bg-red-500/15 text-red-400 border-red-500/30">Reject</Badge>;
-  return <Badge className="bg-orange-500/15 text-orange-400 border-orange-500/30">Error</Badge>;
+  if (code === "accept")
+    return (
+      <Badge className="bg-green-500/15 text-green-400 border-green-500/30">
+        Accept
+      </Badge>
+    );
+  if (code === "reject")
+    return (
+      <Badge className="bg-red-500/15 text-red-400 border-red-500/30">
+        Reject
+      </Badge>
+    );
+  return (
+    <Badge className="bg-orange-500/15 text-orange-400 border-orange-500/30">
+      Error
+    </Badge>
+  );
 }
 
 function JsonExpander({ label, value }: { label: string; value?: string }) {
   if (!value) return <span className="text-muted-foreground text-xs">—</span>;
   let parsed: unknown;
-  try { parsed = JSON.parse(value); } catch { parsed = value; }
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    parsed = value;
+  }
   return (
     <Collapsible>
       <CollapsibleTrigger asChild>
@@ -66,8 +88,12 @@ function JsonExpander({ label, value }: { label: string; value?: string }) {
 
 function RadiusLogsInner() {
   const { selectedWorkspaceId: workspaceId } = useWorkspace();
-  const [typeFilter, setTypeFilter] = useState<"all" | "authorize" | "authenticate" | "accounting">("all");
-  const [codeFilter, setCodeFilter] = useState<"all" | "accept" | "reject" | "error">("all");
+  const [typeFilter, setTypeFilter] = useState<
+    "all" | "authorize" | "authenticate" | "accounting"
+  >("all");
+  const [codeFilter, setCodeFilter] = useState<
+    "all" | "accept" | "reject" | "error"
+  >("all");
 
   const { results, status, loadMore } = usePaginatedQuery(
     api.radius.listLogs,
@@ -84,7 +110,10 @@ function RadiusLogsInner() {
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3 flex-wrap">
-        <Select value={typeFilter} onValueChange={(v) => setTypeFilter(v as typeof typeFilter)}>
+        <Select
+          value={typeFilter}
+          onValueChange={(v) => setTypeFilter(v as typeof typeFilter)}
+        >
           <SelectTrigger className="w-44">
             <SelectValue placeholder="Type" />
           </SelectTrigger>
@@ -95,7 +124,10 @@ function RadiusLogsInner() {
             <SelectItem value="accounting">Accounting</SelectItem>
           </SelectContent>
         </Select>
-        <Select value={codeFilter} onValueChange={(v) => setCodeFilter(v as typeof codeFilter)}>
+        <Select
+          value={codeFilter}
+          onValueChange={(v) => setCodeFilter(v as typeof codeFilter)}
+        >
           <SelectTrigger className="w-36">
             <SelectValue placeholder="Response" />
           </SelectTrigger>
@@ -110,7 +142,9 @@ function RadiusLogsInner() {
 
       {status === "LoadingFirstPage" ? (
         <div className="space-y-2">
-          {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-12 w-full" />)}
+          {Array.from({ length: 5 }).map((_, i) => (
+            <Skeleton key={i} className="h-12 w-full" />
+          ))}
         </div>
       ) : (
         <div className="rounded-lg border overflow-auto">
@@ -131,8 +165,12 @@ function RadiusLogsInner() {
             <TableBody>
               {results.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="text-center text-muted-foreground py-12">
-                    No RADIUS log entries yet. Logs appear here when FreeRADIUS queries the REST endpoints.
+                  <TableCell
+                    colSpan={9}
+                    className="text-center text-muted-foreground py-12"
+                  >
+                    No RADIUS log entries yet. Logs appear here when FreeRADIUS
+                    queries the REST endpoints.
                   </TableCell>
                 </TableRow>
               ) : (
@@ -141,16 +179,30 @@ function RadiusLogsInner() {
                     <TableCell className="text-xs text-muted-foreground whitespace-nowrap">
                       {new Date(log.createdAt).toLocaleString()}
                     </TableCell>
-                    <TableCell><TypeBadge type={log.type} /></TableCell>
-                    <TableCell className="font-mono text-xs">{log.username}</TableCell>
-                    <TableCell className="font-mono text-xs">{log.nasIdentifier ?? "—"}</TableCell>
-                    <TableCell className="font-mono text-xs">{log.nasIpAddress ?? "—"}</TableCell>
-                    <TableCell><ResponseBadge code={log.responseCode} /></TableCell>
+                    <TableCell>
+                      <TypeBadge type={log.type} />
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {log.username}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {log.nasIdentifier ?? "—"}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {log.nasIpAddress ?? "—"}
+                    </TableCell>
+                    <TableCell>
+                      <ResponseBadge code={log.responseCode} />
+                    </TableCell>
                     <TableCell className="text-xs text-muted-foreground max-w-[160px] truncate">
                       {log.rejectReason ?? "—"}
                     </TableCell>
-                    <TableCell><JsonExpander label="View" value={log.requestAttrs} /></TableCell>
-                    <TableCell><JsonExpander label="View" value={log.responseAttrs} /></TableCell>
+                    <TableCell>
+                      <JsonExpander label="View" value={log.requestAttrs} />
+                    </TableCell>
+                    <TableCell>
+                      <JsonExpander label="View" value={log.responseAttrs} />
+                    </TableCell>
                   </TableRow>
                 ))
               )}
@@ -172,36 +224,44 @@ function RadiusLogsInner() {
 
 export default function RadiusLogsPage() {
   return (
-    <div className="space-y-6 p-4 md:p-6">
+    <div className="flex flex-col gap-6 p-4 md:p-6">
       <div>
         <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
           <ShieldCheck className="w-6 h-6 text-primary" />
           RADIUS Auth Logs
         </h1>
         <p className="text-sm text-muted-foreground mt-1">
-          Real-time log of every authorize, authenticate, and accounting request from FreeRADIUS.
+          Real-time log of every authorize, authenticate, and accounting request
+          from FreeRADIUS.
         </p>
       </div>
 
       {/* FreeRADIUS rlm_rest setup guidance */}
-      <div className="rounded-lg border border-primary/20 bg-muted/30 p-4 space-y-3">
-        <p className="text-sm font-semibold text-foreground">FreeRADIUS 3.x REST bridge</p>
+      <div className="order-last rounded-lg border border-primary/20 bg-muted/30 p-4 space-y-3">
+        <p className="text-sm font-semibold text-foreground">
+          FreeRADIUS 3.x REST bridge
+        </p>
         <p className="text-xs text-muted-foreground">
-          This is a configuration template, not a live connection. Replace both placeholders;
-          keep the gateway token in a root-readable configuration file and set the matching
-          <code className="mx-1">RADIUS_GATEWAY_TOKEN</code> on the Convex server. The endpoint
-          requires HTTPS and uses the operating system CA store for certificate verification.
-          Subscriber PPPoE and Hotspot credentials are stored encrypted with
-          <code className="mx-1">PPPOE_CREDENTIAL_ENCRYPTION_KEY</code>. This credential-check flow
-          expects PAP; CHAP/MS-CHAP are not supported. Hotspot requests must include
+          This is a configuration template, not a live connection. Replace both
+          placeholders; keep the gateway token in a root-readable configuration
+          file and set the matching
+          <code className="mx-1">RADIUS_GATEWAY_TOKEN</code> on the Convex
+          server. The endpoint requires HTTPS and uses the operating system CA
+          store for certificate verification. Subscriber PPPoE and Hotspot
+          credentials are stored encrypted with
+          <code className="mx-1">PPPOE_CREDENTIAL_ENCRYPTION_KEY</code>. This
+          credential-check flow expects PAP; CHAP/MS-CHAP are not supported.
+          Hotspot requests must include
           <code className="mx-1">Service-Type=Login-User</code>; PPPoE uses
-          <code className="mx-1">Service-Type=Framed-User</code>. If the attribute is omitted,
-          the bridge resolves the service from a unique username within the router&apos;s workspace.
+          <code className="mx-1">Service-Type=Framed-User</code>. If the
+          attribute is omitted, the bridge resolves the service from a unique
+          username within the router&apos;s workspace.
         </p>
         <pre className="text-xs font-mono text-muted-foreground whitespace-pre-wrap">{`# /etc/freeradius/3.0/mods-available/rest
 rest {
   connect_uri = "https://<YOUR-DEPLOYMENT>.convex.site"
-  connect_timeout = 4.0
+  connect_timeout = 2.0
+  timeout = 2.5
   tls {
     check_cert = yes
     check_cert_cn = yes
@@ -242,18 +302,26 @@ accounting {
 }
 `}</pre>
         <p className="text-xs text-muted-foreground">
-          The REST module serializes request attributes as JSON, including the RADIUS
-          <code className="mx-1">Service-Type</code> used to select the service-specific subscriber
-          credentials and package. The bridge returns
+          The REST module serializes request attributes as JSON, including the
+          RADIUS
+          <code className="mx-1">Service-Type</code> used to select the
+          service-specific subscriber credentials and package. The bridge
+          returns
           <code className="mx-1">control:Auth-Type</code> and
-          <code className="mx-1">reply:Mikrotik-Rate-Limit</code>; RouterOS rate values are
-          <code className="mx-1">upload/download</code> from the router&apos;s perspective.
-          Validate the completed configuration with <code>freeradius -XC</code> before restart.
+          <code className="mx-1">reply:Mikrotik-Rate-Limit</code>; RouterOS rate
+          values are
+          <code className="mx-1">upload/download</code> from the router&apos;s
+          perspective. The generated settings allow a 2.5-second REST call and a
+          3-second RouterOS RADIUS wait, staying below RouterOS&apos;s warning
+          threshold for PPP authentication. Validate the completed configuration
+          with <code>freeradius -XC</code> before restart.
         </p>
       </div>
 
       <Unauthenticated>
-        <div className="flex items-center justify-center py-12"><SignInButton /></div>
+        <div className="flex items-center justify-center py-12">
+          <SignInButton />
+        </div>
       </Unauthenticated>
       <Authenticated>
         <RadiusLogsInner />

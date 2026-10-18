@@ -109,7 +109,7 @@ export const getStats = query({
     if (!router || router.workspaceId !== args.workspaceId) {
       throw new ConvexError("Router does not belong to this workspace");
     }
-    const [active, recent] = await Promise.all([
+    const [active, interim, recent] = await Promise.all([
       ctx.db
         .query("router_sessions")
         .withIndex("by_workspace_and_router_and_status", (index) =>
@@ -117,6 +117,15 @@ export const getStats = query({
             .eq("workspaceId", args.workspaceId)
             .eq("routerId", args.routerId)
             .eq("status", "active"),
+        )
+        .take(1001),
+      ctx.db
+        .query("router_sessions")
+        .withIndex("by_workspace_and_router_and_status", (index) =>
+          index
+            .eq("workspaceId", args.workspaceId)
+            .eq("routerId", args.routerId)
+            .eq("status", "interim"),
         )
         .take(1001),
       ctx.db
@@ -140,11 +149,11 @@ export const getStats = query({
         (session.outputGigawords ?? 0) * 4_294_967_296;
     }
     return {
-      activeSessions: Math.min(active.length, 1000),
+      activeSessions: Math.min(active.length + interim.length, 1000),
       totalSessions: recent.length,
       totalDownloadBytes,
       totalUploadBytes,
-      truncated: active.length > 1000,
+      truncated: active.length + interim.length > 1000,
     };
   },
 });

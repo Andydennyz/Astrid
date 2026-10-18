@@ -165,6 +165,29 @@ export const redeem = action({
   },
 });
 
+export const rotateRadiusSecret = action({
+  args: {
+    workspaceId: v.id("workspaces"),
+    routerId: v.id("routers"),
+  },
+  returns: v.object({ radiusSecret: v.string() }),
+  handler: async (ctx, args) => {
+    const radiusSecret = toHex(crypto.getRandomValues(new Uint8Array(32)));
+    const digest = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(radiusSecret),
+    );
+    await ctx.runMutation(
+      internal.routerEnrollments.rotateRadiusSecretInternal,
+      {
+        ...args,
+        radiusSecretHash: toHex(new Uint8Array(digest)),
+      },
+    );
+    return { radiusSecret };
+  },
+});
+
 export const list = query({
   args: { workspaceId: v.id("workspaces") },
   returns: v.array(publicEnrollment),
@@ -526,6 +549,36 @@ export const redeemInternal = internalMutation({
       redeemedAt: new Date().toISOString(),
     });
     return routerId;
+  },
+});
+
+export const rotateRadiusSecretInternal = internalMutation({
+  args: {
+    workspaceId: v.id("workspaces"),
+    routerId: v.id("routers"),
+    radiusSecretHash: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await requireWorkspaceRole(ctx, args.workspaceId, managerRoles);
+    if (!/^[a-f0-9]{64}$/.test(args.radiusSecretHash)) {
+      throw new ConvexError({
+        code: "INVALID_RADIUS_SECRET_HASH",
+        message: "Generated RADIUS secret is invalid",
+      });
+    }
+    const router = await ctx.db.get(args.routerId);
+    if (!router || router.workspaceId !== args.workspaceId) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Router not found",
+      });
+    }
+    await ctx.db.patch(args.routerId, {
+      radiusSecretHash: args.radiusSecretHash,
+      radiusSecret: undefined,
+    });
+    return null;
   },
 });
 

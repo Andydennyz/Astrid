@@ -393,6 +393,95 @@ describe("router enrollment staging", () => {
     ).rejects.toThrow(/already enrolled/i);
   });
 
+  it("rotates RADIUS secrets once, stores only the hash, and enforces router scope and manager roles", async () => {
+    const t = convexTest(schema, modules);
+    const owner = authenticatedTestUser(t, "radius-rotation-owner");
+    const reader = authenticatedTestUser(t, "radius-rotation-reader");
+    const workspaceId = await createWorkspaceFixture(
+      t,
+      owner,
+      "RADIUS rotation workspace",
+    );
+    const otherWorkspaceId = await createWorkspaceFixture(
+      t,
+      owner,
+      "Other RADIUS workspace",
+    );
+    const readerId = await reader.mutation(api.users.updateCurrentUser, {});
+    await t.run(async (ctx) => {
+      await ctx.db.insert("workspace_members", {
+        workspaceId,
+        userId: readerId,
+        role: "read_only",
+        joinedAt: new Date().toISOString(),
+      });
+    });
+
+    const enrollment = await owner.action(api.routerEnrollments.create, {
+      workspaceId,
+      name: "Rotating router",
+      routerOsVersion: "v7",
+    });
+    const previousSecret = "d".repeat(64);
+    const { routerId } = await owner.action(api.routerEnrollments.redeem, {
+      workspaceId,
+      enrollmentId: enrollment.enrollmentId,
+      token: enrollment.token,
+      routerPublicKey: `${"F".repeat(43)}=`,
+      radiusSecret: previousSecret,
+    });
+    const previousHash = await t.run(async (ctx) => {
+      const router = await ctx.db.get(routerId);
+      if (!router?.radiusSecretHash) {
+        throw new Error("Expected the router to have a RADIUS secret hash");
+      }
+      await ctx.db.patch(routerId, { radiusSecret: "legacy plaintext" });
+      return router.radiusSecretHash;
+    });
+
+    await expect(
+      reader.action(api.routerEnrollments.rotateRadiusSecret, {
+        workspaceId,
+        routerId,
+      }),
+    ).rejects.toThrow();
+    await expect(
+      owner.action(api.routerEnrollments.rotateRadiusSecret, {
+        workspaceId: otherWorkspaceId,
+        routerId,
+      }),
+    ).rejects.toThrow(/router not found/i);
+    await expect(
+      t.run(async (ctx) => (await ctx.db.get(routerId))?.radiusSecretHash),
+    ).resolves.toBe(previousHash);
+
+    const rotation = await owner.action(
+      api.routerEnrollments.rotateRadiusSecret,
+      { workspaceId, routerId },
+    );
+    expect(rotation.radiusSecret).toMatch(/^[a-f0-9]{64}$/);
+    expect(rotation.radiusSecret).not.toBe(previousSecret);
+    const expectedHash = new Uint8Array(
+      await crypto.subtle.digest(
+        "SHA-256",
+        new TextEncoder().encode(rotation.radiusSecret),
+      ),
+    );
+    const expectedHashHex = Array.from(expectedHash, (byte) =>
+      byte.toString(16).padStart(2, "0"),
+    ).join("");
+    const rotatedRouter = await t.run(async (ctx) => ctx.db.get(routerId));
+    expect(rotatedRouter?.radiusSecretHash).toBe(expectedHashHex);
+    expect(rotatedRouter).not.toHaveProperty("radiusSecret");
+
+    const publicRouter = await owner.query(api.routers.getById, {
+      workspaceId,
+      id: routerId,
+    });
+    expect(publicRouter).not.toHaveProperty("radiusSecret");
+    expect(publicRouter).not.toHaveProperty("radiusSecretHash");
+  });
+
   it("does not allow a new enrollment to reuse a registered router name", async () => {
     const t = convexTest(schema, modules);
     const owner = authenticatedTestUser(

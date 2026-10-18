@@ -534,6 +534,74 @@ describe("PPPoE credential storage", () => {
 });
 
 describe("RADIUS accounting", () => {
+  it("keeps interim accounting updates in the live session counts", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, workspaceId, routerId } = await setupPppoe(t);
+    const accountingRequest = {
+      "NAS-Identifier": restAttribute("pppoe-nas"),
+      "NAS-IP-Address": restAttribute("10.77.0.2", "ipaddr"),
+      "User-Name": restAttribute("subscriber-1"),
+      "Acct-Session-Id": restAttribute("live-session"),
+    };
+    const headers = {
+      Authorization: `Bearer ${testGatewayToken}`,
+      "Content-Type": "application/json",
+    };
+
+    const startResponse = await t.fetch("/api/radius/accounting", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        ...accountingRequest,
+        "Acct-Status-Type": restAttribute("Start", "integer"),
+      }),
+    });
+    const interimResponse = await t.fetch("/api/radius/accounting", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        ...accountingRequest,
+        "Acct-Status-Type": restAttribute("Interim-Update", "integer"),
+        "Acct-Session-Time": restAttribute(300, "integer"),
+      }),
+    });
+
+    expect(startResponse.status).toBe(200);
+    expect(interimResponse.status).toBe(200);
+    const session = await t.run(async (ctx) =>
+      ctx.db
+        .query("router_sessions")
+        .withIndex("by_workspace_and_router_and_session_id", (index) =>
+          index
+            .eq("workspaceId", workspaceId)
+            .eq("routerId", routerId)
+            .eq("sessionId", "live-session"),
+        )
+        .unique(),
+    );
+    expect(session?.status).toBe("active");
+
+    await t.mutation(internal.radius.upsertSession, {
+      sessionId: "legacy-interim-session",
+      routerId,
+      username: "subscriber-1",
+      nasIdentifier: "pppoe-nas",
+      status: "interim",
+      startTime: new Date().toISOString(),
+      connectionType: "pppoe",
+    });
+
+    await expect(
+      owner.query(api.sessions.getActiveSummary, { workspaceId }),
+    ).resolves.toMatchObject({ total: 2 });
+    await expect(
+      owner.query(api.routers.getStats, { workspaceId, routerId }),
+    ).resolves.toMatchObject({ activeSessions: 2 });
+    await expect(
+      owner.query(api.reports.getNetworkReport, { workspaceId }),
+    ).resolves.toMatchObject({ activeSessions: 2 });
+  });
+
   it("does not reopen a stopped session when a delayed interim update arrives", async () => {
     const t = convexTest(schema, modules);
     const { routerId, workspaceId } = await setupPppoe(t);

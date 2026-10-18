@@ -236,7 +236,7 @@ export const getNetworkReport = query({
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - daysBack);
     const cutoffStr = cutoff.toISOString();
-    const [routers, recentLogs, recentSessions, activeSessions] = await Promise.all([
+    const [routers, recentLogs, recentSessions, activeSessions, interimSessions] = await Promise.all([
       ctx.db
         .query("routers")
         .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
@@ -259,7 +259,14 @@ export const getNetworkReport = query({
           q.eq("workspaceId", args.workspaceId).eq("status", "active"),
         )
         .take(8192),
+      ctx.db
+        .query("router_sessions")
+        .withIndex("by_workspace_and_status", (q) =>
+          q.eq("workspaceId", args.workspaceId).eq("status", "interim"),
+        )
+        .take(8192),
     ]);
+    const liveSessions = [...activeSessions, ...interimSessions];
 
     const authLogs = recentLogs.filter((log) => log.type !== "accounting");
     const authAccept = authLogs.filter((log) => log.responseCode === "accept").length;
@@ -298,7 +305,7 @@ export const getNetworkReport = query({
       .slice(0, 10);
 
     const activeByRouter = new Map<string, number>();
-    for (const session of activeSessions) {
+    for (const session of liveSessions) {
       if (!session.routerId) continue;
       activeByRouter.set(
         session.routerId,
@@ -326,7 +333,7 @@ export const getNetworkReport = query({
     return {
       daysBack,
       totalSessions: recentSessions.length,
-      activeSessions: activeSessions.length,
+      activeSessions: liveSessions.length,
       authAccept,
       authReject,
       rejectReasons: [...rejectReasons.entries()]
