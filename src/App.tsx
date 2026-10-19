@@ -1,4 +1,4 @@
-import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { DefaultProviders } from "./components/providers/default.tsx";
 import AuthCallback from "./pages/auth/Callback.tsx";
 import AcceptInvitePage from "./pages/accept-invite/page.tsx";
@@ -25,6 +25,20 @@ import RoutersPage from "./pages/routers/page.tsx";
 import SessionsPage from "./pages/sessions/page.tsx";
 import RadiusLogsPage from "./pages/radius-logs/page.tsx";
 import PlatformTenantsPage from "./pages/platform-tenants/page.tsx";
+import SubscriberProfileLayout from "./pages/subscribers/profile/layout.tsx";
+import SubscriberProfileErrorBoundary from "./pages/subscribers/profile/error-boundary.tsx";
+import {
+  SubscriberActivitiesPage,
+  SubscriberDevicesPage,
+  SubscriberInvoicesPage,
+  SubscriberOverviewPage,
+  SubscriberPaymentsPage,
+  SubscriberRouterAccountsPage,
+  SubscriberSessionsPage,
+  SubscriberSmsPage,
+  SubscriberTicketsPage,
+  SubscriberUsageAnalyticsPage,
+} from "./pages/subscribers/profile/sections.tsx";
 
 export default function App() {
   return (
@@ -42,6 +56,33 @@ export default function App() {
           <Route element={<AppLayout />}>
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/subscribers" element={<SubscribersPage />} />
+            <Route element={<SubscriberProfileErrorBoundary />}>
+              <Route
+                path="/subscribers/:subscriberId"
+                element={<SubscriberProfileLayout />}
+              >
+                <Route index element={<Navigate to="overview" replace />} />
+                <Route path="overview" element={<SubscriberOverviewPage />} />
+                <Route
+                  path="router-accounts"
+                  element={<SubscriberRouterAccountsPage />}
+                />
+                <Route path="sessions" element={<SubscriberSessionsPage />} />
+                <Route path="payments" element={<SubscriberPaymentsPage />} />
+                <Route path="invoices" element={<SubscriberInvoicesPage />} />
+                <Route path="sms" element={<SubscriberSmsPage />} />
+                <Route
+                  path="usage-analytics"
+                  element={<SubscriberUsageAnalyticsPage />}
+                />
+                <Route path="devices" element={<SubscriberDevicesPage />} />
+                <Route path="tickets" element={<SubscriberTicketsPage />} />
+                <Route
+                  path="activities"
+                  element={<SubscriberActivitiesPage />}
+                />
+              </Route>
+            </Route>
             <Route path="/network" element={<NetworkPage />} />
             <Route path="/packages" element={<PackagesPage />} />
             <Route path="/financials" element={<FinancialsPage />} />

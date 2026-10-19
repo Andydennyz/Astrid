@@ -24,6 +24,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  vi.useRealTimers();
 });
 
 function authenticatedTestUser(t: ReturnType<typeof convexTest>) {
@@ -38,7 +39,11 @@ function authenticatedTestUser(t: ReturnType<typeof convexTest>) {
 
 async function setupPppoe(t: ReturnType<typeof convexTest>) {
   const owner = authenticatedTestUser(t);
-  const workspaceId = await createWorkspaceFixture(t, owner, "RADIUS workspace");
+  const workspaceId = await createWorkspaceFixture(
+    t,
+    owner,
+    "RADIUS workspace",
+  );
   const packageId = await owner.mutation(api.packages.create, {
     workspaceId,
     name: "PPPoE 20",
@@ -82,7 +87,11 @@ async function setupPppoe(t: ReturnType<typeof convexTest>) {
 
 async function setupHotspot(t: ReturnType<typeof convexTest>) {
   const owner = authenticatedTestUser(t);
-  const workspaceId = await createWorkspaceFixture(t, owner, "Hotspot RADIUS workspace");
+  const workspaceId = await createWorkspaceFixture(
+    t,
+    owner,
+    "Hotspot RADIUS workspace",
+  );
   const packageId = await owner.mutation(api.packages.create, {
     workspaceId,
     name: "Hotspot 10",
@@ -148,7 +157,9 @@ describe("PPPoE RADIUS authorization", () => {
         status: "active",
       }),
     ).rejects.toThrow("Select an active pppoe package before activation");
-    await expect(t.run(async (ctx) => ctx.db.get(subscriberId))).resolves.toMatchObject({
+    await expect(
+      t.run(async (ctx) => ctx.db.get(subscriberId)),
+    ).resolves.toMatchObject({
       status: "suspended",
     });
 
@@ -162,7 +173,9 @@ describe("PPPoE RADIUS authorization", () => {
       ids: [subscriberId],
       status: "active",
     });
-    await expect(t.run(async (ctx) => ctx.db.get(subscriberId))).resolves.toMatchObject({
+    await expect(
+      t.run(async (ctx) => ctx.db.get(subscriberId)),
+    ).resolves.toMatchObject({
       status: "active",
     });
 
@@ -192,7 +205,11 @@ describe("PPPoE RADIUS authorization", () => {
   it("creates the onboarding subscriber and initial invoice atomically", async () => {
     const t = convexTest(schema, modules);
     const owner = authenticatedTestUser(t);
-    const workspaceId = await createWorkspaceFixture(t, owner, "Initial invoice workspace");
+    const workspaceId = await createWorkspaceFixture(
+      t,
+      owner,
+      "Initial invoice workspace",
+    );
     const packageId = await owner.mutation(api.packages.create, {
       workspaceId,
       name: "PPPoE 5",
@@ -226,8 +243,11 @@ describe("PPPoE RADIUS authorization", () => {
     ).rejects.toThrow(/valid invoice due date/i);
     await expect(
       t.run(async (ctx) =>
-        ctx.db.query("subscribers")
-          .withIndex("by_workspace", (index) => index.eq("workspaceId", workspaceId))
+        ctx.db
+          .query("subscribers")
+          .withIndex("by_workspace", (index) =>
+            index.eq("workspaceId", workspaceId),
+          )
           .take(10),
       ),
     ).resolves.toHaveLength(0);
@@ -240,7 +260,8 @@ describe("PPPoE RADIUS authorization", () => {
       },
     });
     const invoices = await t.run(async (ctx) =>
-      ctx.db.query("invoices")
+      ctx.db
+        .query("invoices")
         .withIndex("by_workspace_and_subscriber", (index) =>
           index.eq("workspaceId", workspaceId).eq("subscriberId", subscriberId),
         )
@@ -277,10 +298,322 @@ describe("PPPoE RADIUS authorization", () => {
     });
   });
 
+  it("rejects expired service and renews it for 30 days", async () => {
+    vi.useFakeTimers();
+    const t = convexTest(schema, modules);
+    const { owner, workspaceId, routerId, subscriberId } = await setupPppoe(t);
+    await t.run(async (ctx) =>
+      ctx.db.patch(subscriberId, {
+        status: "expired",
+        serviceExpiresAt: new Date(Date.now() - 86_400_000).toISOString(),
+      }),
+    );
+
+    await expect(
+      t.action(internal.radius_helpers.authorizeSubscriber, {
+        routerId,
+        username: "subscriber-1",
+        password: "temporary-test-password",
+        connectionType: "pppoe",
+      }),
+    ).resolves.toMatchObject({ accepted: false });
+    await expect(
+      owner.mutation(api.subscribers.updateStatus, {
+        workspaceId,
+        ids: [subscriberId],
+        status: "active",
+      }),
+    ).rejects.toThrow("Service has expired");
+
+    const renewedExpiry = await owner.mutation(api.subscribers.extendService, {
+      workspaceId,
+      id: subscriberId,
+      mode: "renew",
+    });
+    expect(Date.parse(renewedExpiry)).toBeGreaterThan(Date.now() + 29 * 86_400_000);
+    await expect(t.run(async (ctx) => ctx.db.get(subscriberId))).resolves.toMatchObject({
+      status: "active",
+      serviceExpiresAt: renewedExpiry,
+    });
+    await expect(
+      t.action(internal.radius_helpers.authorizeSubscriber, {
+        routerId,
+        username: "subscriber-1",
+        password: "temporary-test-password",
+        connectionType: "pppoe",
+      }),
+    ).resolves.toMatchObject({ accepted: true, subscriberId });
+  });
+
+  it("extends service from the later of the current expiry or today", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, workspaceId, subscriberId } = await setupPppoe(t);
+    const currentExpiry = new Date(Date.now() + 10 * 86_400_000).toISOString();
+    await t.run(async (ctx) =>
+      ctx.db.patch(subscriberId, { serviceExpiresAt: currentExpiry }),
+    );
+
+    const nextExpiry = await owner.mutation(api.subscribers.extendService, {
+      workspaceId,
+      id: subscriberId,
+      mode: "extend",
+      days: 7,
+    });
+    expect(Date.parse(nextExpiry)).toBe(
+      Date.parse(currentExpiry) + 7 * 86_400_000,
+    );
+    await expect(
+      owner.mutation(api.subscribers.extendService, {
+        workspaceId,
+        id: subscriberId,
+        mode: "extend",
+        days: 0,
+      }),
+    ).rejects.toThrow("between 1 and 3650 days");
+  });
+
+  it("expires only the service term that is still current", async () => {
+    const t = convexTest(schema, modules);
+    const { workspaceId, subscriberId } = await setupPppoe(t);
+    const staleExpiry = new Date(Date.now() - 60_000).toISOString();
+    const currentExpiry = new Date(Date.now() + 60_000).toISOString();
+    await t.run(async (ctx) =>
+      ctx.db.patch(subscriberId, {
+        serviceExpiresAt: currentExpiry,
+        status: "active",
+      }),
+    );
+
+    await t.mutation(internal.subscribers.expireService, {
+      subscriberId,
+      expectedExpiry: staleExpiry,
+    });
+    await expect(t.run(async (ctx) => ctx.db.get(subscriberId))).resolves.toMatchObject({
+      status: "active",
+    });
+
+    await t.run(async (ctx) =>
+      ctx.db.patch(subscriberId, { serviceExpiresAt: staleExpiry }),
+    );
+    await t.mutation(internal.subscribers.expireService, {
+      subscriberId,
+      expectedExpiry: staleExpiry,
+    });
+    await expect(t.run(async (ctx) => ctx.db.get(subscriberId))).resolves.toMatchObject({
+      status: "expired",
+    });
+    const audit = await t.run(async (ctx) =>
+      ctx.db
+        .query("audit_logs")
+        .withIndex("by_workspace", (index) => index.eq("workspaceId", workspaceId))
+        .take(10),
+    );
+    expect(audit.some((entry) => entry.action === "expire_service")).toBe(true);
+  });
+
+  it("queues one targeted gateway disconnect for an active PPPoE session at expiry", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, workspaceId, routerId, subscriberId } = await setupPppoe(t);
+    const setupId = await owner.mutation(api.routers.recordManagementSetup, {
+      workspaceId,
+      routerId,
+      managementAddress: "10.77.0.2",
+      gatewaySourceAddress: "10.77.0.1",
+      apiUsername: "astrid-api-a1b2c3d4e5f6",
+      certificateName: "astrid-api-ssl",
+      scriptSha256: "a".repeat(64),
+    });
+    await owner.mutation(api.routers.markManagementSetupApplied, {
+      workspaceId,
+      setupId,
+    });
+    await owner.action(api.routerGateway.rotateGatewayCredential, {
+      workspaceId,
+    });
+
+    const expiresAt = new Date(Date.now() - 60_000).toISOString();
+    await t.run(async (ctx) => {
+      await ctx.db.insert("router_sessions", {
+        workspaceId,
+        routerId,
+        subscriberId,
+        username: "subscriber-1",
+        nasIdentifier: "pppoe-nas",
+        sessionId: "radius-session-1",
+        status: "active",
+        startTime: new Date(Date.now() - 60_000).toISOString(),
+        connectionType: "pppoe",
+        createdAt: new Date().toISOString(),
+      });
+    });
+
+    await owner.mutation(api.subscribers.update, {
+      workspaceId,
+      id: subscriberId,
+      serviceExpiresAt: expiresAt,
+    });
+    await expect(
+      t.run(async (ctx) => ctx.db.get(subscriberId)),
+    ).resolves.toMatchObject({ status: "expired" });
+    await owner.mutation(api.subscribers.update, {
+      workspaceId,
+      id: subscriberId,
+      serviceExpiresAt: expiresAt,
+    });
+
+    const operations = await t.run(async (ctx) =>
+      ctx.db
+        .query("router_gateway_operations")
+        .withIndex("by_workspace", (index) =>
+          index.eq("workspaceId", workspaceId),
+        )
+        .take(10),
+    );
+    expect(operations).toHaveLength(1);
+    expect(operations[0]).toMatchObject({
+      routerId,
+      setupId,
+      operationType: "disconnect_ppp_session",
+      targetSessionId: "radius-session-1",
+      targetUsername: "subscriber-1",
+      serviceExpiryAt: expiresAt,
+      status: "pending",
+    });
+
+    const claimed = await t.mutation(internal.routerGateway.claimNextOperation, {
+      workspaceId,
+      claimTokenHash: "b".repeat(64),
+    });
+    expect(claimed).toMatchObject({
+      operationId: operations[0]._id,
+      operationType: "disconnect_ppp_session",
+      targetSessionId: "radius-session-1",
+      targetUsername: "subscriber-1",
+      managementAddress: "10.77.0.2",
+    });
+    await t.mutation(internal.routerGateway.completeOperation, {
+      workspaceId,
+      operationId: operations[0]._id,
+      claimTokenHash: "b".repeat(64),
+      status: "failed",
+      detail: "Temporary router API failure",
+    });
+    await expect(
+      t.run(async (ctx) => ctx.db.get(operations[0]._id)),
+    ).resolves.toMatchObject({ status: "pending", attemptCount: 1 });
+    const retried = await t.mutation(internal.routerGateway.claimNextOperation, {
+      workspaceId,
+      claimTokenHash: "c".repeat(64),
+    });
+    expect(retried).toMatchObject({ operationId: operations[0]._id });
+    await t.mutation(internal.routerGateway.completeOperation, {
+      workspaceId,
+      operationId: operations[0]._id,
+      claimTokenHash: "c".repeat(64),
+      status: "succeeded",
+      detail: "Disconnected the matching PPPoE session",
+    });
+    await expect(
+      t.run(async (ctx) => ctx.db.get(operations[0]._id)),
+    ).resolves.toMatchObject({ status: "succeeded", attemptCount: 2 });
+    await expect(
+      t.run(async (ctx) => ctx.db.get(subscriberId)),
+    ).resolves.toMatchObject({ isOnline: false });
+    await expect(
+      t.run(async (ctx) =>
+        ctx.db
+          .query("router_sessions")
+          .withIndex("by_workspace_and_router_and_session_id", (index) =>
+            index
+              .eq("workspaceId", workspaceId)
+              .eq("routerId", routerId)
+              .eq("sessionId", "radius-session-1"),
+          )
+          .first(),
+      ),
+    ).resolves.toMatchObject({
+      status: "stopped",
+      terminateCause: "Service-Expired",
+    });
+  });
+
+  it("records when an active PPPoE session cannot be disconnected because gateway setup is missing", async () => {
+    const t = convexTest(schema, modules);
+    const { workspaceId, routerId, subscriberId } = await setupPppoe(t);
+    const expiresAt = new Date(Date.now() - 60_000).toISOString();
+    await t.run(async (ctx) => {
+      await ctx.db.patch(subscriberId, { serviceExpiresAt: expiresAt });
+      await ctx.db.insert("router_sessions", {
+        workspaceId,
+        routerId,
+        subscriberId,
+        username: "subscriber-1",
+        nasIdentifier: "pppoe-nas",
+        sessionId: "radius-session-2",
+        status: "interim",
+        startTime: new Date(Date.now() - 60_000).toISOString(),
+        connectionType: "pppoe",
+        createdAt: new Date().toISOString(),
+      });
+    });
+
+    await t.mutation(internal.subscribers.expireService, {
+      subscriberId,
+      expectedExpiry: expiresAt,
+    });
+
+    const audit = await t.run(async (ctx) =>
+      ctx.db
+        .query("audit_logs")
+        .withIndex("by_workspace", (index) =>
+          index.eq("workspaceId", workspaceId),
+        )
+        .take(20),
+    );
+    expect(
+      audit.some((entry) => entry.action === "expiry_disconnect_unavailable"),
+    ).toBe(true);
+  });
+
+  it("returns Session-Timeout so RouterOS ends the accepted RADIUS session at expiry", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, workspaceId, subscriberId } = await setupPppoe(t);
+    const expiresAt = new Date(Date.now() + 120_000).toISOString();
+    await owner.mutation(api.subscribers.update, {
+      workspaceId,
+      id: subscriberId,
+      serviceExpiresAt: expiresAt,
+    });
+
+    const response = await t.fetch("/api/radius/authenticate", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${testGatewayToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        "NAS-Identifier": restAttribute("pppoe-nas"),
+        "NAS-IP-Address": restAttribute("10.77.0.2", "ipaddr"),
+        "User-Name": restAttribute("subscriber-1"),
+        "User-Password": restAttribute("temporary-test-password"),
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    const reply = (await response.json()) as Record<
+      string,
+      { value: number[]; op: string }
+    >;
+    expect(reply["reply:Session-Timeout"]?.op).toBe(":=");
+    expect(reply["reply:Session-Timeout"]?.value[0]).toBeGreaterThan(0);
+    expect(reply["reply:Session-Timeout"]?.value[0]).toBeLessThanOrEqual(120);
+  });
+
   describe("Hotspot RADIUS authorization", () => {
     it("stores separate encrypted credentials and authorizes an active Hotspot package", async () => {
       const t = convexTest(schema, modules);
-      const { owner, workspaceId, packageId, subscriberId, routerId } = await setupHotspot(t);
+      const { owner, workspaceId, packageId, subscriberId, routerId } =
+        await setupHotspot(t);
       const stored = await t.run(async (ctx) => ctx.db.get(subscriberId));
       expect(stored).toMatchObject({ packageId });
       expect(stored?.hotspotPassword).toBeUndefined();
@@ -292,7 +625,9 @@ describe("PPPoE RADIUS authorization", () => {
         workspaceId,
         id: subscriberId,
       });
-      expect(publicSubscriber).toMatchObject({ hotspotUsername: "hotspot-user" });
+      expect(publicSubscriber).toMatchObject({
+        hotspotUsername: "hotspot-user",
+      });
       expect(publicSubscriber).not.toHaveProperty("hotspotPassword");
       expect(publicSubscriber).not.toHaveProperty("hotspotPasswordCiphertext");
       expect(publicSubscriber).not.toHaveProperty("hotspotPasswordIv");
@@ -301,7 +636,9 @@ describe("PPPoE RADIUS authorization", () => {
         paginationOpts: { numItems: 10, cursor: null },
       });
       expect(subscriberPage.page[0]).not.toHaveProperty("hotspotUsername");
-      expect(subscriberPage.page[0]).not.toHaveProperty("hotspotPasswordCiphertext");
+      expect(subscriberPage.page[0]).not.toHaveProperty(
+        "hotspotPasswordCiphertext",
+      );
 
       await owner.action(api.subscribers.setHotspotCredentials, {
         workspaceId,
@@ -341,7 +678,9 @@ describe("PPPoE RADIUS authorization", () => {
         uploadSpeed: 1,
         isActive: false,
       });
-      await t.run(async (ctx) => ctx.db.patch(subscriberId, { packageId: otherHotspotPackage }));
+      await t.run(async (ctx) =>
+        ctx.db.patch(subscriberId, { packageId: otherHotspotPackage }),
+      );
       await expect(
         t.action(internal.radius_helpers.authorizeSubscriber, {
           routerId,
@@ -361,7 +700,9 @@ describe("PPPoE RADIUS authorization", () => {
         uploadSpeed: 5,
         isActive: true,
       });
-      await t.run(async (ctx) => ctx.db.patch(subscriberId, { packageId: pppoePackage }));
+      await t.run(async (ctx) =>
+        ctx.db.patch(subscriberId, { packageId: pppoePackage }),
+      );
       await expect(
         t.action(internal.radius_helpers.authorizeSubscriber, {
           routerId,
@@ -428,7 +769,11 @@ describe("PPPoE RADIUS authorization", () => {
   it("rejects credentials when the subscriber belongs to a different workspace", async () => {
     const t = convexTest(schema, modules);
     const { owner, routerId, packageId } = await setupPppoe(t);
-    const otherWorkspaceId = await createWorkspaceFixture(t, owner, "Other workspace");
+    const otherWorkspaceId = await createWorkspaceFixture(
+      t,
+      owner,
+      "Other workspace",
+    );
     const foreignCredential = await encryptSubscriberPassword(
       "temporary-test-password",
       testEncryptionKey,
@@ -644,6 +989,99 @@ describe("RADIUS accounting", () => {
       stopTime: "2026-10-16T00:10:00.000Z",
       terminateCause: "User-Request",
     });
+  });
+
+  it("marks the router and subscriber online while a RADIUS session is active", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, routerId, subscriberId, workspaceId } = await setupPppoe(t);
+    const session = {
+      sessionId: "presence-session",
+      routerId,
+      subscriberId,
+      username: "subscriber-1",
+      nasIdentifier: "pppoe-nas",
+      status: "active" as const,
+      startTime: "2026-10-16T00:00:00.000Z",
+      connectionType: "pppoe" as const,
+    };
+
+    await t.mutation(internal.radius.upsertSession, session);
+
+    const subscriberPage = await owner.query(api.subscribers.list, {
+      workspaceId,
+      paginationOpts: { numItems: 10, cursor: null },
+    });
+    expect(subscriberPage.page[0]?.isOnline).toBe(true);
+    await expect(
+      owner.query(api.subscribers.getById, { workspaceId, id: subscriberId }),
+    ).resolves.toMatchObject({ isOnline: true });
+    await expect(
+      owner.query(api.routers.list, { workspaceId }),
+    ).resolves.toMatchObject([
+      { status: "online", lastSeen: expect.any(String) },
+    ]);
+
+    await t.mutation(internal.radius.upsertSession, {
+      ...session,
+      status: "stopped",
+      stopTime: "2026-10-16T00:10:00.000Z",
+    });
+
+    const updatedPage = await owner.query(api.subscribers.list, {
+      workspaceId,
+      paginationOpts: { numItems: 10, cursor: null },
+    });
+    expect(updatedPage.page[0]?.isOnline).toBe(false);
+  });
+
+  it("keeps suspended subscribers offline despite an active or rejected RADIUS attempt", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, routerId, subscriberId, workspaceId } = await setupPppoe(t);
+    await t.run(async (ctx) => {
+      await ctx.db.patch(subscriberId, { status: "suspended", isOnline: true });
+    });
+
+    await t.mutation(internal.radius.upsertSession, {
+      sessionId: "suspended-session",
+      routerId,
+      subscriberId,
+      username: "subscriber-1",
+      nasIdentifier: "pppoe-nas",
+      status: "active",
+      startTime: new Date().toISOString(),
+      connectionType: "pppoe",
+    });
+    await t.mutation(internal.radius.logAndReject, {
+      type: "authorize",
+      username: "subscriber-1",
+      routerId,
+      responseCode: "reject",
+      rejectReason: "Subscriber suspended",
+    });
+
+    const page = await owner.query(api.subscribers.list, {
+      workspaceId,
+      paginationOpts: { numItems: 10, cursor: null },
+    });
+    expect(page.page[0]?.isOnline).toBe(false);
+    await expect(
+      owner.query(api.subscribers.getById, {
+        workspaceId,
+        id: subscriberId,
+      }),
+    ).resolves.toMatchObject({ isOnline: false });
+    await expect(
+      t.run(async (ctx) => ctx.db.get(subscriberId)),
+    ).resolves.toMatchObject({ isOnline: false });
+    await expect(
+      owner.query(api.subscribers.getStats, { workspaceId }),
+    ).resolves.toMatchObject({ online: 0 });
+    await expect(
+      owner.query(api.dashboard.getStats, { workspaceId }),
+    ).resolves.toMatchObject({ onlineSubscribers: 0 });
+    await expect(
+      owner.query(api.reports.getSubscriberReport, { workspaceId }),
+    ).resolves.toMatchObject({ onlineCount: 0 });
   });
 });
 

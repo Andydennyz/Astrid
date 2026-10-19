@@ -2,7 +2,7 @@
   "convex_site_url": "https://your-deployment.convex.site",
   "workspace_id": "replace-with-workspace-id",
   "gateway_token": "replace-with-the-64-character-one-time-gateway-token",
-  "poll_interval_seconds": 15,
+  "poll_interval_seconds": 3,
   "request_timeout_seconds": 20,
   "ca_bundle": "/etc/astrid-router-gateway/router-ca.pem",
   "routers": {

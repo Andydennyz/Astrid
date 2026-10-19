@@ -1,6 +1,10 @@
 import { v } from "convex/values";
 import { query } from "./_generated/server";
 import { requireWorkspaceRole } from "./model/workspace";
+import {
+  getRadiusOnlineSubscriberIds,
+  isSubscriberOnline,
+} from "./model/subscriberPresence";
 
 const readRoles = ["owner", "admin", "billing", "network", "read_only"] as const;
 const exportedRow = v.record(v.string(), v.union(v.string(), v.number()));
@@ -61,11 +65,12 @@ export const getSubscriberReport = query({
   }),
   handler: async (ctx, args) => {
     await requireWorkspaceRole(ctx, args.workspaceId, readRoles);
-    const [subscribers, packages] = await Promise.all([
+    const [subscribers, packages, radiusOnlineSubscriberIds] = await Promise.all([
       ctx.db.query("subscribers").withIndex("by_workspace", (q) =>
         q.eq("workspaceId", args.workspaceId)).take(8192),
       ctx.db.query("packages").withIndex("by_workspace", (q) =>
         q.eq("workspaceId", args.workspaceId)).take(8192),
+      getRadiusOnlineSubscriberIds(ctx, args.workspaceId),
     ]);
     const packageMap = new Map(packages.map((pkg) => [pkg._id, pkg]));
     const byPackage = new Map<string, { name: string; count: number; revenue: number }>();
@@ -96,7 +101,9 @@ export const getSubscriberReport = query({
       packageBreakdown: [...byPackage.values()].sort((a, b) => b.count - a.count),
       totalMRR: subscribers.filter((s) => s.status === "active")
         .reduce((sum, subscriber) => sum + subscriber.monthlyFee, 0),
-      onlineCount: subscribers.filter((s) => s.isOnline).length,
+      onlineCount: subscribers.filter((subscriber) =>
+        isSubscriberOnline(subscriber, radiusOnlineSubscriberIds),
+      ).length,
     };
   },
 });

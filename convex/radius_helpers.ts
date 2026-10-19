@@ -12,6 +12,7 @@ type SubscriberLookup = {
   passwordCiphertext?: string;
   passwordIv?: string;
   status: Doc<"subscribers">["status"];
+  serviceExpiresAt?: string;
   connectionType: Doc<"subscribers">["connectionType"];
   ipAddress?: string;
   packageId?: Doc<"subscribers">["packageId"];
@@ -25,6 +26,7 @@ type SubscriberAuthorization =
       username: string;
       downloadMbps: number;
       uploadMbps: number;
+      sessionTimeout?: number;
       framedIpAddress?: string;
     }
   | { accepted: false; reason: string };
@@ -44,6 +46,7 @@ const authorizationResult = v.union(
     username: v.string(),
     downloadMbps: v.number(),
     uploadMbps: v.number(),
+    sessionTimeout: v.optional(v.number()),
     framedIpAddress: v.optional(v.string()),
   }),
   v.object({ accepted: v.literal(false), reason: v.string() }),
@@ -70,6 +73,7 @@ export const findSubscriberByUsername = internalQuery({
         v.literal("expired"),
         v.literal("pending"),
       ),
+      serviceExpiresAt: v.optional(v.string()),
       connectionType: v.union(
         v.literal("pppoe"),
         v.literal("hotspot"),
@@ -152,6 +156,9 @@ export const findSubscriberByUsername = internalQuery({
       ...(passwordCiphertext === undefined ? {} : { passwordCiphertext }),
       ...(passwordIv === undefined ? {} : { passwordIv }),
       status: subscriber.status,
+      ...(subscriber.serviceExpiresAt === undefined
+        ? {}
+        : { serviceExpiresAt: subscriber.serviceExpiresAt }),
       ...(subscriber.ipAddress === undefined
         ? {}
         : { ipAddress: subscriber.ipAddress }),
@@ -264,9 +271,15 @@ export const authorizeSubscriber = internalAction({
           : { connectionType: args.connectionType }),
       },
     );
+    const expiryTimestamp =
+      subscriber?.serviceExpiresAt === undefined
+        ? null
+        : Date.parse(subscriber.serviceExpiresAt);
     if (
       !subscriber ||
       subscriber.status !== "active" ||
+      (expiryTimestamp !== null &&
+        (!Number.isFinite(expiryTimestamp) || expiryTimestamp <= Date.now())) ||
       (subscriber.connectionType !== "pppoe" &&
         subscriber.connectionType !== "hotspot") ||
       (args.connectionType !== undefined &&
@@ -311,6 +324,14 @@ export const authorizeSubscriber = internalAction({
       username: subscriber.username,
       downloadMbps: pkg.downloadSpeed,
       uploadMbps: pkg.uploadSpeed,
+      ...(expiryTimestamp === null
+        ? {}
+        : {
+            sessionTimeout: Math.max(
+              1,
+              Math.ceil((expiryTimestamp - Date.now()) / 1000),
+            ),
+          }),
       ...(subscriber.ipAddress === undefined
         ? {}
         : { framedIpAddress: subscriber.ipAddress }),

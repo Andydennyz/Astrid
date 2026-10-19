@@ -1,6 +1,10 @@
 import { v } from "convex/values";
 import { query } from "./_generated/server";
 import { requireWorkspaceRole } from "./model/workspace";
+import {
+  getRadiusOnlineSubscriberIds,
+  isSubscriberOnline,
+} from "./model/subscriberPresence";
 
 const readRoles = ["owner", "admin", "billing", "network", "read_only"] as const;
 const dashboardStatsValidator = v.object({
@@ -23,7 +27,14 @@ export const getStats = query({
   returns: dashboardStatsValidator,
   handler: async (ctx, args) => {
     await requireWorkspaceRole(ctx, args.workspaceId, readRoles);
-    const [subscribers, invoices, tickets, packages, devices] = await Promise.all([
+    const [
+      subscribers,
+      invoices,
+      tickets,
+      packages,
+      devices,
+      radiusOnlineSubscriberIds,
+    ] = await Promise.all([
       ctx.db.query("subscribers").withIndex("by_workspace", (q) =>
         q.eq("workspaceId", args.workspaceId)).take(8192),
       ctx.db.query("invoices").withIndex("by_workspace", (q) =>
@@ -34,9 +45,12 @@ export const getStats = query({
         q.eq("workspaceId", args.workspaceId)).take(8192),
       ctx.db.query("network_devices").withIndex("by_workspace", (q) =>
         q.eq("workspaceId", args.workspaceId)).take(8192),
+      getRadiusOnlineSubscriberIds(ctx, args.workspaceId),
     ]);
     const active = subscribers.filter((s) => s.status === "active").length;
-    const online = subscribers.filter((s) => s.isOnline).length;
+    const online = subscribers.filter((subscriber) =>
+      isSubscriberOnline(subscriber, radiusOnlineSubscriberIds),
+    ).length;
     const now = new Date();
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();

@@ -36,7 +36,11 @@ export default function AppLayout() {
   const platformAccessPending = isPlatformTenantsRoute && isPlatformOwner === undefined;
   const canUsePlatformRoute = isPlatformTenantsRoute && isPlatformOwner === true;
 
-  const currentTitle = pageTitles[location.pathname] ?? "Dashboard";
+  const currentTitle =
+    pageTitles[location.pathname] ??
+    (location.pathname.startsWith("/subscribers/")
+      ? "Subscriber Profile"
+      : "Dashboard");
 
   return (
     <>

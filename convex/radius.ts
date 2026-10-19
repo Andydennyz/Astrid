@@ -1,25 +1,48 @@
-import { paginationResultValidator, paginationOptsValidator } from "convex/server";
+import {
+  paginationResultValidator,
+  paginationOptsValidator,
+} from "convex/server";
 import { ConvexError, v } from "convex/values";
 import { internalMutation, query } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { requireWorkspaceRole } from "./model/workspace";
+import { isSubscriberServiceAvailable } from "./model/subscriberPresence";
 
 const radiusType = v.union(
   v.literal("authorize"),
   v.literal("authenticate"),
   v.literal("accounting"),
 );
-const responseCode = v.union(v.literal("accept"), v.literal("reject"), v.literal("error"));
+const responseCode = v.union(
+  v.literal("accept"),
+  v.literal("reject"),
+  v.literal("error"),
+);
 
-async function requireRouterWorkspace(ctx: MutationCtx, routerId?: Id<"routers">) {
-  if (!routerId) throw new ConvexError("RADIUS writes require an authenticated router gateway");
+async function requireRouterWorkspace(
+  ctx: MutationCtx,
+  routerId?: Id<"routers">,
+) {
+  if (!routerId)
+    throw new ConvexError(
+      "RADIUS writes require an authenticated router gateway",
+    );
   const router = await ctx.db.get(routerId);
   if (!router?.workspaceId) {
-    throw new ConvexError("Router workspace is unavailable; RADIUS bridge is disabled");
+    throw new ConvexError(
+      "Router workspace is unavailable; RADIUS bridge is disabled",
+    );
   }
   return router;
+}
+
+async function markRouterOnline(ctx: MutationCtx, router: Doc<"routers">) {
+  await ctx.db.patch(router._id, {
+    status: "online",
+    lastSeen: new Date().toISOString(),
+  });
 }
 
 export const logAndAccept = internalMutation({
@@ -35,6 +58,7 @@ export const logAndAccept = internalMutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const router = await requireRouterWorkspace(ctx, args.routerId);
+    await markRouterOnline(ctx, router);
     await ctx.db.insert("radius_logs", {
       ...args,
       workspaceId: router.workspaceId,
@@ -59,6 +83,7 @@ export const logAndReject = internalMutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const router = await requireRouterWorkspace(ctx, args.routerId);
+    await markRouterOnline(ctx, router);
     await ctx.db.insert("radius_logs", {
       ...args,
       workspaceId: router.workspaceId,
@@ -79,7 +104,11 @@ export const upsertSession = internalMutation({
     framedIpAddress: v.optional(v.string()),
     calledStationId: v.optional(v.string()),
     callingStationId: v.optional(v.string()),
-    status: v.union(v.literal("active"), v.literal("stopped"), v.literal("interim")),
+    status: v.union(
+      v.literal("active"),
+      v.literal("stopped"),
+      v.literal("interim"),
+    ),
     startTime: v.string(),
     stopTime: v.optional(v.string()),
     sessionTime: v.optional(v.number()),
@@ -88,15 +117,22 @@ export const upsertSession = internalMutation({
     inputGigawords: v.optional(v.number()),
     outputGigawords: v.optional(v.number()),
     terminateCause: v.optional(v.string()),
-    connectionType: v.union(v.literal("pppoe"), v.literal("hotspot"), v.literal("static")),
+    connectionType: v.union(
+      v.literal("pppoe"),
+      v.literal("hotspot"),
+      v.literal("static"),
+    ),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
     const router = await requireRouterWorkspace(ctx, args.routerId);
+    await markRouterOnline(ctx, router);
     if (args.subscriberId) {
       const subscriber = await ctx.db.get(args.subscriberId);
       if (!subscriber || subscriber.workspaceId !== router.workspaceId) {
-        throw new ConvexError("RADIUS subscriber does not belong to the router workspace");
+        throw new ConvexError(
+          "RADIUS subscriber does not belong to the router workspace",
+        );
       }
     }
     const existing = await ctx.db
@@ -111,10 +147,23 @@ export const upsertSession = internalMutation({
     if (existing?.status === "stopped" && args.status !== "stopped") {
       return null;
     }
-    const { sessionId: _sessionId, routerId: _routerId, ...sessionFields } = args;
+    const {
+      sessionId: _sessionId,
+      routerId: _routerId,
+      subscriberId,
+      ...sessionFields
+    } = args;
+    const persistedSessionFields = {
+      ...sessionFields,
+      ...(subscriberId === undefined
+        ? existing?.subscriberId === undefined
+          ? {}
+          : { subscriberId: existing.subscriberId }
+        : { subscriberId }),
+    };
     if (existing) {
       await ctx.db.patch(existing._id, {
-        ...sessionFields,
+        ...persistedSessionFields,
         startTime: existing.startTime,
         workspaceId: router.workspaceId,
         routerId: router._id,
@@ -126,6 +175,37 @@ export const upsertSession = internalMutation({
         routerId: router._id,
         createdAt: new Date().toISOString(),
       });
+    }
+    const effectiveSubscriberId = subscriberId ?? existing?.subscriberId;
+    if (effectiveSubscriberId) {
+      const [active, interim] = await Promise.all([
+        ctx.db
+          .query("router_sessions")
+          .withIndex("by_workspace_and_subscriber_and_status", (index) =>
+            index
+              .eq("workspaceId", router.workspaceId!)
+              .eq("subscriberId", effectiveSubscriberId)
+              .eq("status", "active"),
+          )
+          .first(),
+        ctx.db
+          .query("router_sessions")
+          .withIndex("by_workspace_and_subscriber_and_status", (index) =>
+            index
+              .eq("workspaceId", router.workspaceId!)
+              .eq("subscriberId", effectiveSubscriberId)
+              .eq("status", "interim"),
+          )
+          .first(),
+      ]);
+      const subscriber = await ctx.db.get(effectiveSubscriberId);
+      if (subscriber?.workspaceId === router.workspaceId) {
+        await ctx.db.patch(effectiveSubscriberId, {
+          isOnline:
+            Boolean(active || interim) &&
+            isSubscriberServiceAvailable(subscriber),
+        });
+      }
     }
     return null;
   },
@@ -140,7 +220,12 @@ export const listLogs = query({
   },
   returns: paginationResultValidator(schema.doc("radius_logs")),
   handler: async (ctx, args) => {
-    await requireWorkspaceRole(ctx, args.workspaceId, ["owner", "admin", "network", "read_only"]);
+    await requireWorkspaceRole(ctx, args.workspaceId, [
+      "owner",
+      "admin",
+      "network",
+      "read_only",
+    ]);
     const base = ctx.db.query("radius_logs");
     const q =
       args.type && args.responseCode
@@ -161,7 +246,9 @@ export const listLogs = query({
     return args.responseCode && !args.type
       ? {
           ...page,
-          page: page.page.filter((log) => log.responseCode === args.responseCode),
+          page: page.page.filter(
+            (log) => log.responseCode === args.responseCode,
+          ),
         }
       : page;
   },

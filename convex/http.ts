@@ -239,6 +239,9 @@ const authenticateSubscriber = httpAction(async (ctx, request) => {
     "control:Auth-Type": "Accept",
     "reply:Reply-Message": "Access-Accept",
     "reply:Mikrotik-Rate-Limit": `${result.uploadMbps}M/${result.downloadMbps}M`,
+    ...(result.sessionTimeout === undefined
+      ? {}
+      : { "reply:Session-Timeout": result.sessionTimeout }),
     ...(result.framedIpAddress === undefined
       ? {}
       : { "reply:Framed-IP-Address": result.framedIpAddress }),

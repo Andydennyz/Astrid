@@ -12,8 +12,6 @@ import { Badge } from "@/components/ui/badge.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
 import { Button } from "@/components/ui/button.tsx";
 import {
-  Wifi,
-  WifiOff,
   Phone,
   Mail,
   MapPin,
@@ -27,6 +25,7 @@ import {
   ShieldCheck,
   KeyRound,
 } from "lucide-react";
+import { WifiSignalIcon } from "@/components/ui/wifi-status.tsx";
 import { format } from "date-fns";
 import { toast } from "sonner";
 import { useState } from "react";
@@ -54,7 +53,11 @@ type Props = {
   onEdit: (id: Id<"subscribers">) => void;
 };
 
-export default function SubscriberDetailDrawer({ subscriberId, onClose, onEdit }: Props) {
+export default function SubscriberDetailDrawer({
+  subscriberId,
+  onClose,
+  onEdit,
+}: Props) {
   const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [confirmDelete, setConfirmDelete] = useState(false);
   const sub = useQuery(
@@ -68,10 +71,18 @@ export default function SubscriberDetailDrawer({ subscriberId, onClose, onEdit }
     if (!subscriberId || !sub || !workspaceId) return;
     const newStatus = sub.status === "suspended" ? "active" : "suspended";
     try {
-      await updateStatus({ workspaceId, ids: [subscriberId], status: newStatus });
-      toast.success(`Subscriber ${newStatus === "active" ? "activated" : "suspended"}`);
+      await updateStatus({
+        workspaceId,
+        ids: [subscriberId],
+        status: newStatus,
+      });
+      toast.success(
+        `Subscriber ${newStatus === "active" ? "activated" : "suspended"}`,
+      );
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to update status");
+      toast.error(
+        error instanceof Error ? error.message : "Failed to update status",
+      );
     }
   };
 
@@ -94,7 +105,9 @@ export default function SubscriberDetailDrawer({ subscriberId, onClose, onEdit }
           className="w-full sm:max-w-lg bg-card border-border overflow-y-auto"
         >
           <SheetHeader className="pb-4 border-b border-border">
-            <SheetTitle className="text-foreground text-base">Subscriber Details</SheetTitle>
+            <SheetTitle className="text-foreground text-base">
+              Subscriber Details
+            </SheetTitle>
           </SheetHeader>
 
           {sub === undefined ? (
@@ -117,7 +130,9 @@ export default function SubscriberDetailDrawer({ subscriberId, onClose, onEdit }
                   </span>
                 </div>
                 <div className="flex-1 min-w-0">
-                  <h3 className="font-semibold text-foreground text-base truncate">{sub.name}</h3>
+                  <h3 className="font-semibold text-foreground text-base truncate">
+                    {sub.name}
+                  </h3>
                   <div className="flex items-center gap-2 mt-1 flex-wrap">
                     <Badge
                       className={`text-[10px] px-2 py-0.5 border ${STATUS_STYLES[sub.status]}`}
@@ -125,15 +140,11 @@ export default function SubscriberDetailDrawer({ subscriberId, onClose, onEdit }
                       {sub.status.charAt(0).toUpperCase() + sub.status.slice(1)}
                     </Badge>
                     <span className="flex items-center gap-1 text-[10px] text-muted-foreground">
-                      {sub.isOnline ? (
-                        <>
-                          <Wifi size={10} className="text-green-400" /> Online
-                        </>
-                      ) : (
-                        <>
-                          <WifiOff size={10} className="text-red-400" /> Offline
-                        </>
-                      )}
+                      <WifiSignalIcon
+                        status={sub.isOnline ? "online" : "offline"}
+                        className="size-3"
+                      />
+                      {sub.isOnline ? "Online" : "Offline"}
                     </span>
                     <span className="text-[10px] text-muted-foreground uppercase font-mono bg-muted/30 px-1.5 py-0.5 rounded">
                       {sub.connectionType}
@@ -148,15 +159,19 @@ export default function SubscriberDetailDrawer({ subscriberId, onClose, onEdit }
                   { icon: Phone, label: "Phone", value: sub.phone },
                   { icon: Mail, label: "Email", value: sub.email ?? "—" },
                   { icon: MapPin, label: "Address", value: sub.address ?? "—" },
-                  { icon: Server, label: "IP Address", value: sub.ipAddress ?? "—" },
+                  {
+                    icon: Server,
+                    label: "IP Address",
+                    value: sub.ipAddress ?? "—",
+                  },
                   {
                     icon: KeyRound,
                     label: "Service Username",
                     value:
                       sub.connectionType === "pppoe"
-                        ? sub.pppoeUsername ?? "—"
+                        ? (sub.pppoeUsername ?? "—")
                         : sub.connectionType === "hotspot"
-                          ? sub.hotspotUsername ?? "—"
+                          ? (sub.hotspotUsername ?? "—")
                           : "—",
                     mono: true,
                   },
@@ -169,7 +184,9 @@ export default function SubscriberDetailDrawer({ subscriberId, onClose, onEdit }
                   {
                     icon: Tag,
                     label: "Package",
-                    value: sub.package ? `${sub.package.name} (${sub.package.speed})` : "—",
+                    value: sub.package
+                      ? `${sub.package.name} (${sub.package.speed})`
+                      : "—",
                   },
                   {
                     icon: CreditCard,
@@ -203,8 +220,13 @@ export default function SubscriberDetailDrawer({ subscriberId, onClose, onEdit }
                     key={label}
                     className="flex items-center gap-3 px-3 py-2 rounded-lg bg-background/40 border border-border/50"
                   >
-                    <Icon size={13} className="text-muted-foreground shrink-0" />
-                    <span className="text-xs text-muted-foreground w-24 shrink-0">{label}</span>
+                    <Icon
+                      size={13}
+                      className="text-muted-foreground shrink-0"
+                    />
+                    <span className="text-xs text-muted-foreground w-24 shrink-0">
+                      {label}
+                    </span>
                     <span
                       className={`text-xs text-right flex-1 truncate ${valueClass ?? "text-foreground"} ${mono ? "font-mono" : ""}`}
                     >
@@ -240,7 +262,9 @@ export default function SubscriberDetailDrawer({ subscriberId, onClose, onEdit }
                           <p className="text-xs text-foreground font-medium">
                             {inv.invoiceNumber}
                           </p>
-                          <p className="text-[10px] text-muted-foreground">{inv.dueDate}</p>
+                          <p className="text-[10px] text-muted-foreground">
+                            {inv.dueDate}
+                          </p>
                         </div>
                         <div className="text-right">
                           <p className="text-xs font-semibold text-foreground">
@@ -311,10 +335,12 @@ export default function SubscriberDetailDrawer({ subscriberId, onClose, onEdit }
       <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
         <AlertDialogContent className="bg-card border-border">
           <AlertDialogHeader>
-            <AlertDialogTitle className="text-foreground">Delete Subscriber?</AlertDialogTitle>
+            <AlertDialogTitle className="text-foreground">
+              Delete Subscriber?
+            </AlertDialogTitle>
             <AlertDialogDescription className="text-muted-foreground">
-              This action cannot be undone. All data related to this subscriber will be permanently
-              removed.
+              This action cannot be undone. All data related to this subscriber
+              will be permanently removed.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

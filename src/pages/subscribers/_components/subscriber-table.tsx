@@ -1,9 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { usePaginatedQuery, useMutation } from "convex/react";
 import { api } from "@/convex/_generated/api.js";
 import { useWorkspace } from "@/components/providers/workspace.tsx";
 import type { Id } from "@/convex/_generated/dataModel.d.ts";
-import { Wifi, WifiOff, MoreHorizontal, ChevronLeft, ChevronRight } from "lucide-react";
+import { MoreHorizontal, ChevronLeft, ChevronRight, Eye } from "lucide-react";
 import { Badge } from "@/components/ui/badge.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
 import { Button } from "@/components/ui/button.tsx";
@@ -17,6 +17,8 @@ import {
 } from "@/components/ui/dropdown-menu.tsx";
 import { toast } from "sonner";
 import { useDebounce } from "@/hooks/use-debounce.ts";
+import { useNavigate } from "react-router-dom";
+import { WifiStatus } from "@/components/ui/wifi-status.tsx";
 
 const STATUS_STYLES = {
   active: "bg-green-400/10 text-green-400 border-green-400/30",
@@ -31,6 +33,27 @@ const CONN_STYLES = {
   static: "bg-orange-400/10 text-orange-400",
 };
 
+function expiryCountdown(expiresAt: string | undefined, now: number) {
+  if (!expiresAt) return "No expiry set";
+  const remaining = Date.parse(expiresAt) - now;
+  if (!Number.isFinite(remaining)) return "Invalid expiry";
+  if (remaining <= 0) return "Expired";
+  const totalSeconds = Math.floor(remaining / 1000);
+  const days = Math.floor(totalSeconds / 86_400);
+  const hours = Math.floor((totalSeconds % 86_400) / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  return `${days}d ${String(hours).padStart(2, "0")}h ${String(minutes).padStart(2, "0")}m ${String(seconds).padStart(2, "0")}s left`;
+}
+
+function effectiveStatus(
+  status: keyof typeof STATUS_STYLES,
+  expiresAt: string | undefined,
+  now: number,
+) {
+  return expiresAt && Date.parse(expiresAt) <= now ? "expired" : status;
+}
+
 type Props = {
   statusFilter: string;
   connFilter: string;
@@ -39,10 +62,23 @@ type Props = {
   onEdit: (id: Id<"subscribers">) => void;
 };
 
-export default function SubscriberTable({ statusFilter, connFilter, search, onSelect, onEdit }: Props) {
+export default function SubscriberTable({
+  statusFilter,
+  connFilter,
+  search,
+  onSelect,
+  onEdit,
+}: Props) {
+  const navigate = useNavigate();
   const { selectedWorkspaceId: workspaceId } = useWorkspace();
   const [selected, setSelected] = useState<Set<Id<"subscribers">>>(new Set());
+  const [now, setNow] = useState(() => Date.now());
   const [debouncedSearch] = useDebounce(search, 300);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, []);
 
   const updateStatus = useMutation(api.subscribers.updateStatus);
   const removeSub = useMutation(api.subscribers.remove);
@@ -52,7 +88,8 @@ export default function SubscriberTable({ statusFilter, connFilter, search, onSe
     workspaceId
       ? {
           workspaceId,
-          status: statusFilter as "active" | "suspended" | "expired" | "pending" | "all",
+          status: statusFilter as
+            "active" | "suspended" | "expired" | "pending" | "all",
           connectionType: connFilter as "pppoe" | "hotspot" | "static" | "all",
           search: debouncedSearch || undefined,
         }
@@ -77,15 +114,23 @@ export default function SubscriberTable({ statusFilter, connFilter, search, onSe
     }
   };
 
-  const bulkUpdateStatus = async (newStatus: "active" | "suspended" | "expired" | "pending") => {
+  const bulkUpdateStatus = async (
+    newStatus: "active" | "suspended" | "expired" | "pending",
+  ) => {
     if (selected.size === 0) return toast.error("Select subscribers first");
     if (!workspaceId) return;
     try {
-      await updateStatus({ workspaceId, ids: Array.from(selected), status: newStatus });
+      await updateStatus({
+        workspaceId,
+        ids: Array.from(selected),
+        status: newStatus,
+      });
       toast.success(`${selected.size} subscriber(s) updated to ${newStatus}`);
       setSelected(new Set());
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to update status");
+      toast.error(
+        error instanceof Error ? error.message : "Failed to update status",
+      );
     }
   };
 
@@ -96,9 +141,13 @@ export default function SubscriberTable({ statusFilter, connFilter, search, onSe
     if (!workspaceId) return;
     try {
       await updateStatus({ workspaceId, ids: [id], status: newStatus });
-      toast.success(`Subscriber ${newStatus === "active" ? "activated" : "suspended"}`);
+      toast.success(
+        `Subscriber ${newStatus === "active" ? "activated" : "suspended"}`,
+      );
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Failed to update status");
+      toast.error(
+        error instanceof Error ? error.message : "Failed to update status",
+      );
     }
   };
 
@@ -168,7 +217,9 @@ export default function SubscriberTable({ statusFilter, connFilter, search, onSe
               <tr className="border-b border-border bg-background/50">
                 <th className="px-4 py-3 text-left w-10">
                   <Checkbox
-                    checked={results.length > 0 && selected.size === results.length}
+                    checked={
+                      results.length > 0 && selected.size === results.length
+                    }
                     onCheckedChange={toggleAll}
                     className="border-border"
                   />
@@ -192,15 +243,18 @@ export default function SubscriberTable({ statusFilter, connFilter, search, onSe
                   IP Address
                 </th>
                 <th className="px-4 py-3 text-center text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
-                  Online
+                  Online / Expiry
                 </th>
-                <th className="w-10" />
+                <th className="w-20" />
               </tr>
             </thead>
             <tbody className="divide-y divide-border/50">
               {results.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="px-4 py-12 text-center text-sm text-muted-foreground">
+                  <td
+                    colSpan={9}
+                    className="px-4 py-12 text-center text-sm text-muted-foreground"
+                  >
                     No subscribers found
                   </td>
                 </tr>
@@ -245,9 +299,20 @@ export default function SubscriberTable({ statusFilter, connFilter, search, onSe
 
                     <td className="px-4 py-3 hidden sm:table-cell">
                       <Badge
-                        className={`text-[10px] px-2 py-0.5 border ${STATUS_STYLES[sub.status]}`}
+                        className={`text-[10px] px-2 py-0.5 border ${STATUS_STYLES[effectiveStatus(sub.status, sub.serviceExpiresAt, now)]}`}
                       >
-                        {sub.status.charAt(0).toUpperCase() + sub.status.slice(1)}
+                        {effectiveStatus(
+                          sub.status,
+                          sub.serviceExpiresAt,
+                          now,
+                        )
+                          .charAt(0)
+                          .toUpperCase() +
+                          effectiveStatus(
+                            sub.status,
+                            sub.serviceExpiresAt,
+                            now,
+                          ).slice(1)}
                       </Badge>
                     </td>
 
@@ -261,10 +326,14 @@ export default function SubscriberTable({ statusFilter, connFilter, search, onSe
 
                     <td className="px-4 py-3 hidden lg:table-cell">
                       <p className="text-xs text-foreground truncate max-w-[120px]">
-                        {sub.packageName ?? <span className="text-muted-foreground">—</span>}
+                        {sub.packageName ?? (
+                          <span className="text-muted-foreground">—</span>
+                        )}
                       </p>
                       {sub.packageSpeed && (
-                        <p className="text-[10px] text-muted-foreground">{sub.packageSpeed}</p>
+                        <p className="text-[10px] text-muted-foreground">
+                          {sub.packageSpeed}
+                        </p>
                       )}
                     </td>
 
@@ -281,68 +350,116 @@ export default function SubscriberTable({ statusFilter, connFilter, search, onSe
                     </td>
 
                     <td className="px-4 py-3 text-center">
-                      {sub.isOnline ? (
-                        <Wifi size={14} className="text-green-400 mx-auto" />
-                      ) : (
-                        <WifiOff size={14} className="text-muted-foreground mx-auto" />
-                      )}
+                      <div className="flex min-w-28 flex-col items-center gap-1">
+                        <WifiStatus
+                          status={sub.isOnline ? "online" : "offline"}
+                          className="mx-auto px-1.5 text-[10px]"
+                        />
+                        <span
+                          className={`whitespace-nowrap text-[10px] ${
+                            sub.serviceExpiresAt &&
+                            Date.parse(sub.serviceExpiresAt) <= now
+                              ? "text-red-400"
+                              : sub.serviceExpiresAt
+                                ? "text-muted-foreground"
+                                : "text-muted-foreground/60"
+                          }`}
+                          title={
+                            sub.serviceExpiresAt
+                              ? `Expires ${new Date(sub.serviceExpiresAt).toLocaleString()}`
+                              : "No service expiry is set"
+                          }
+                        >
+                          {expiryCountdown(sub.serviceExpiresAt, now)}
+                        </span>
+                      </div>
                     </td>
 
                     <td
                       className="px-2 py-3"
                       onClick={(e) => e.stopPropagation()}
                     >
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground opacity-0 group-hover:opacity-100 transition-opacity"
-                          >
-                            <MoreHorizontal size={14} />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent
-                          align="end"
-                          className="bg-card border-border text-sm w-40"
+                      <div className="flex items-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 w-7 p-0 text-muted-foreground hover:text-primary"
+                          aria-label={`Open ${sub.name} profile`}
+                          title="Open subscriber profile"
+                          onClick={() =>
+                            navigate(`/subscribers/${sub._id}/overview`)
+                          }
                         >
-                          <DropdownMenuItem
-                            className="text-foreground cursor-pointer hover:bg-muted/20"
-                            onClick={() => onSelect(sub._id)}
-                          >
-                            View Details
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            className="text-foreground cursor-pointer hover:bg-muted/20"
-                            onClick={() => onEdit(sub._id)}
-                          >
-                            Edit
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator className="bg-border" />
-                          {sub.status !== "active" ? (
-                            <DropdownMenuItem
-                              className="text-green-400 cursor-pointer hover:bg-green-400/10"
-                              onClick={() => void updateOneStatus(sub._id, "active")}
+                          <Eye size={14} />
+                        </Button>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              aria-label={`More actions for ${sub.name}`}
+                              className="h-7 w-7 p-0 text-muted-foreground hover:text-foreground opacity-0 group-hover:opacity-100 transition-opacity"
                             >
-                              Activate
-                            </DropdownMenuItem>
-                          ) : (
-                            <DropdownMenuItem
-                              className="text-amber-400 cursor-pointer hover:bg-amber-400/10"
-                              onClick={() => void updateOneStatus(sub._id, "suspended")}
-                            >
-                              Suspend
-                            </DropdownMenuItem>
-                          )}
-                          <DropdownMenuSeparator className="bg-border" />
-                          <DropdownMenuItem
-                            className="text-red-400 cursor-pointer hover:bg-red-400/10"
-                            onClick={() => handleDelete(sub._id)}
+                              <MoreHorizontal size={14} />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent
+                            align="end"
+                            className="bg-card border-border text-sm w-40"
                           >
-                            Delete
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
+                            <DropdownMenuItem
+                              className="text-foreground cursor-pointer hover:bg-muted/20"
+                              onClick={() => onSelect(sub._id)}
+                            >
+                              View Details
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              className="text-foreground cursor-pointer hover:bg-muted/20"
+                              onClick={() => onEdit(sub._id)}
+                            >
+                              Edit
+                            </DropdownMenuItem>
+                            <DropdownMenuSeparator className="bg-border" />
+                            {effectiveStatus(
+                              sub.status,
+                              sub.serviceExpiresAt,
+                              now,
+                            ) === "expired" ? (
+                              <DropdownMenuItem
+                                className="text-muted-foreground cursor-not-allowed"
+                                disabled
+                              >
+                                Renew from profile
+                              </DropdownMenuItem>
+                            ) : sub.status !== "active" ? (
+                              <DropdownMenuItem
+                                className="text-green-400 cursor-pointer hover:bg-green-400/10"
+                                onClick={() =>
+                                  void updateOneStatus(sub._id, "active")
+                                }
+                              >
+                                Activate
+                              </DropdownMenuItem>
+                            ) : (
+                              <DropdownMenuItem
+                                className="text-amber-400 cursor-pointer hover:bg-amber-400/10"
+                                onClick={() =>
+                                  void updateOneStatus(sub._id, "suspended")
+                                }
+                              >
+                                Suspend
+                              </DropdownMenuItem>
+                            )}
+                            <DropdownMenuSeparator className="bg-border" />
+                            <DropdownMenuItem
+                              className="text-red-400 cursor-pointer hover:bg-red-400/10"
+                              onClick={() => handleDelete(sub._id)}
+                            >
+                              Delete
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
                     </td>
                   </tr>
                 ))

@@ -38,14 +38,19 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu.tsx";
 import { Skeleton } from "@/components/ui/skeleton.tsx";
-import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription, EmptyContent } from "@/components/ui/empty.tsx";
+import {
+  Empty,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+  EmptyDescription,
+  EmptyContent,
+} from "@/components/ui/empty.tsx";
 import { toast } from "sonner";
 import {
   Router as RouterIcon,
   Plus,
   MoreVertical,
-  WifiOff,
-  Wifi,
   Trash2,
   RotateCw,
   Copy,
@@ -54,6 +59,8 @@ import {
   ShieldCheck,
   Activity,
   Signal,
+  ArrowDownToLine,
+  ArrowUpFromLine,
 } from "lucide-react";
 import type { Doc, Id } from "@/convex/_generated/dataModel.d.ts";
 import RouterEnrollment from "./_components/router-enrollment.tsx";
@@ -61,13 +68,15 @@ import RouterManagementSetup from "./_components/router-management-setup.tsx";
 import RouterNetworkAddressDialog from "./_components/router-network-address-dialog.tsx";
 import RouterGatewayCredentials from "./_components/router-gateway-credentials.tsx";
 import RouterFeatureBoundary from "./_components/router-feature-boundary.tsx";
+import { WifiStatus } from "@/components/ui/wifi-status.tsx";
 
-type PublicRouter = Omit<Doc<"routers">, "privateKey" | "presharedKey" | "radiusSecret" | "radiusSecretHash">;
+type PublicRouter = Omit<
+  Doc<"routers">,
+  "privateKey" | "presharedKey" | "radiusSecret" | "radiusSecretHash"
+>;
 
 function StatusBadge({ status }: { status: Doc<"routers">["status"] }) {
-  if (status === "online") return <Badge className="bg-green-500/15 text-green-400 border-green-500/30">Online</Badge>;
-  if (status === "offline") return <Badge className="bg-red-500/15 text-red-400 border-red-500/30">Offline</Badge>;
-  return <Badge variant="secondary">Unknown</Badge>;
+  return <WifiStatus status={status} />;
 }
 
 function RouterCard({
@@ -142,14 +151,26 @@ function RouterCard({
             </div>
             <div>
               <CardTitle className="text-base">{router.name}</CardTitle>
-              <CardDescription className="text-xs mt-0.5">{router.nasIdentifier}</CardDescription>
+              <CardDescription className="text-xs mt-0.5">
+                {router.nasIdentifier}
+              </CardDescription>
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <StatusBadge status={router.status} />
+            <StatusBadge
+              status={
+                router.status === "unknown" && (stats?.activeSessions ?? 0) > 0
+                  ? "online"
+                  : router.status
+              }
+            />
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon" className="h-7 w-7 cursor-pointer">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 cursor-pointer"
+                >
                   <MoreVertical className="w-4 h-4" />
                 </Button>
               </DropdownMenuTrigger>
@@ -217,12 +238,16 @@ function RouterCard({
           <StatTile
             label="↓ Download"
             value={stats ? formatBytes(stats.totalDownloadBytes) : "—"}
-            icon={<Wifi className="w-3 h-3" />}
+            icon={<ArrowDownToLine className="w-3.5 h-3.5 text-cyan-400" />}
+            title="Downloaded data in recent RADIUS session records; not live throughput"
+            valueClassName="text-cyan-400"
           />
           <StatTile
             label="↑ Upload"
             value={stats ? formatBytes(stats.totalUploadBytes) : "—"}
-            icon={<WifiOff className="w-3 h-3" />}
+            icon={<ArrowUpFromLine className="w-3.5 h-3.5 text-violet-400" />}
+            title="Uploaded data in recent RADIUS session records; not live throughput"
+            valueClassName="text-violet-400"
           />
         </div>
 
@@ -232,10 +257,7 @@ function RouterCard({
           </p>
         )}
       </CardContent>
-      <AlertDialog
-        open={confirmRotation}
-        onOpenChange={setConfirmRotation}
-      >
+      <AlertDialog open={confirmRotation} onOpenChange={setConfirmRotation}>
         <AlertDialogContent
           className="border-border bg-card"
           onEscapeKeyDown={(event) => event.preventDefault()}
@@ -246,15 +268,12 @@ function RouterCard({
               Rotation immediately invalidates the current shared secret. New
               PPPoE/Hotspot authentication and RADIUS accounting can fail until
               both the CHR PPP RADIUS entry and Ubuntu FreeRADIUS client
-              configuration are updated. The new secret will be shown once;
-              save it securely. Continue only if both systems are ready to
-              update.
+              configuration are updated. The new secret will be shown once; save
+              it securely. Continue only if both systems are ready to update.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={isRotating}>
-              Cancel
-            </AlertDialogCancel>
+            <AlertDialogCancel disabled={isRotating}>Cancel</AlertDialogCancel>
             <AlertDialogAction
               disabled={isRotating}
               onClick={(event) => {
@@ -305,14 +324,33 @@ function RouterCard({
   );
 }
 
-function StatTile({ label, value, icon }: { label: string; value: string; icon: React.ReactNode }) {
+function StatTile({
+  label,
+  value,
+  icon,
+  title,
+  valueClassName,
+}: {
+  label: string;
+  value: string;
+  icon: React.ReactNode;
+  title?: string;
+  valueClassName?: string;
+}) {
   return (
-    <div className="rounded-md bg-muted/40 border border-border/40 p-2 text-center">
-      <div className="flex items-center justify-center gap-1 text-muted-foreground mb-0.5">
+    <div
+      className="rounded-md bg-muted/40 border border-border/40 p-2 text-center"
+      title={title}
+    >
+      <div className="flex items-center justify-center gap-1 mb-0.5">
         {icon}
         <span className="text-[9px] uppercase tracking-wide">{label}</span>
       </div>
-      <p className="text-sm font-semibold text-foreground">{value}</p>
+      <p
+        className={`text-sm font-semibold ${valueClassName ?? "text-foreground"}`}
+      >
+        {value}
+      </p>
     </div>
   );
 }
@@ -326,7 +364,10 @@ function RoutersPageInner({ onAddRouter }: { onAddRouter: () => void }) {
   const removeRouter = useMutation(api.routers.remove);
   const handleDelete = async (id: Id<"routers">) => {
     if (!workspaceId) return;
-    if (!confirm("Delete this router? This will also remove its session history.")) return;
+    if (
+      !confirm("Delete this router? This will also remove its session history.")
+    )
+      return;
     try {
       await removeRouter({ workspaceId, id });
       toast.success("Router deleted");
@@ -355,8 +396,9 @@ function RoutersPageInner({ onAddRouter }: { onAddRouter: () => void }) {
             </EmptyMedia>
             <EmptyTitle>No routers yet</EmptyTitle>
             <EmptyDescription>
-              Start a secure enrollment to register a RouterOS-generated public key and prepare
-              matching RouterOS and FreeRADIUS client configuration.
+              Start a secure enrollment to register a RouterOS-generated public
+              key and prepare matching RouterOS and FreeRADIUS client
+              configuration.
             </EmptyDescription>
           </EmptyHeader>
           <EmptyContent>
@@ -376,7 +418,6 @@ function RoutersPageInner({ onAddRouter }: { onAddRouter: () => void }) {
           ))}
         </div>
       )}
-
     </>
   );
 }
@@ -394,7 +435,9 @@ export default function RoutersPage() {
             Router Management
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Securely enroll MikroTik routers and generate matching manual RADIUS configuration. The Ubuntu gateway worker, automated WireGuard provisioning, and live integration verification remain outstanding.
+            Securely enroll MikroTik routers and generate matching manual RADIUS
+            configuration. The Ubuntu gateway worker, automated WireGuard
+            provisioning, and live integration verification remain outstanding.
           </p>
         </div>
         <Authenticated>
@@ -412,19 +455,32 @@ export default function RoutersPage() {
             <div className="w-5 h-5 rounded bg-primary/20 flex items-center justify-center shrink-0 mt-0.5">
               <span className="text-primary font-bold text-[10px]">1</span>
             </div>
-            <span><strong className="text-foreground">WireGuard</strong> — The lab tunnel is verified; router peer and address provisioning remains a separate operator-applied step.</span>
+            <span>
+              <strong className="text-foreground">WireGuard</strong> — The lab
+              tunnel is verified; router peer and address provisioning remains a
+              separate operator-applied step.
+            </span>
           </div>
           <div className="flex items-start gap-2">
             <div className="w-5 h-5 rounded bg-primary/20 flex items-center justify-center shrink-0 mt-0.5">
               <span className="text-primary font-bold text-[10px]">2</span>
             </div>
-            <span><strong className="text-foreground">FreeRADIUS</strong> — RouterOS and FreeRADIUS client snippets are generated at enrollment; server configuration, service setup, and CHR connectivity still need verification.</span>
+            <span>
+              <strong className="text-foreground">FreeRADIUS</strong> — RouterOS
+              and FreeRADIUS client snippets are generated at enrollment; server
+              configuration, service setup, and CHR connectivity still need
+              verification.
+            </span>
           </div>
           <div className="flex items-start gap-2">
             <div className="w-5 h-5 rounded bg-primary/20 flex items-center justify-center shrink-0 mt-0.5">
               <span className="text-primary font-bold text-[10px]">3</span>
             </div>
-            <span><strong className="text-foreground">Subscribers</strong> — PPPoE and Hotspot credentials are encrypted server-side and checked by the app-side RADIUS flow.</span>
+            <span>
+              <strong className="text-foreground">Subscribers</strong> — PPPoE
+              and Hotspot credentials are encrypted server-side and checked by
+              the app-side RADIUS flow.
+            </span>
           </div>
         </div>
       </div>

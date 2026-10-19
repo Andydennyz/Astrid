@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { toast } from "sonner";
 import { Check, Copy, KeyRound, LoaderCircle, ShieldCheck } from "lucide-react";
@@ -24,14 +24,19 @@ type RouterManagementSetupProps = {
 };
 
 function randomHex(byteLength: number) {
-  return Array.from(crypto.getRandomValues(new Uint8Array(byteLength)), (byte) =>
-    byte.toString(16).padStart(2, "0"),
+  return Array.from(
+    crypto.getRandomValues(new Uint8Array(byteLength)),
+    (byte) => byte.toString(16).padStart(2, "0"),
   ).join("");
 }
 
-export default function RouterManagementSetup({ router }: RouterManagementSetupProps) {
+export default function RouterManagementSetup({
+  router,
+}: RouterManagementSetupProps) {
   const { selectedWorkspaceId: workspaceId, memberships } = useWorkspace();
-  const membership = memberships.find((item) => item.workspaceId === workspaceId);
+  const membership = memberships.find(
+    (item) => item.workspaceId === workspaceId,
+  );
   const canManage =
     membership?.role === "owner" ||
     membership?.role === "admin" ||
@@ -50,7 +55,9 @@ export default function RouterManagementSetup({ router }: RouterManagementSetupP
   );
   const recordSetup = useMutation(api.routers.recordManagementSetup);
   const markApplied = useMutation(api.routers.markManagementSetupApplied);
-  const enqueueVerification = useMutation(api.routerGateway.enqueueManagementVerification);
+  const enqueueVerification = useMutation(
+    api.routerGateway.enqueueManagementVerification,
+  );
   const [open, setOpen] = useState(false);
   const [managementAddress, setManagementAddress] = useState(
     router.tunnelIp?.split("/")[0] ?? "10.77.0.2",
@@ -60,9 +67,33 @@ export default function RouterManagementSetup({ router }: RouterManagementSetupP
   const [script, setScript] = useState<string | null>(null);
   const [scriptPassword, setScriptPassword] = useState<string | null>(null);
   const [apiUsername, setApiUsername] = useState<string | null>(null);
-  const [setupId, setSetupId] = useState<Id<"router_management_setups"> | null>(null);
-  const [queueingSetupId, setQueueingSetupId] = useState<Id<"router_management_setups"> | null>(null);
+  const [setupId, setSetupId] = useState<Id<"router_management_setups"> | null>(
+    null,
+  );
+  const [queueingSetupId, setQueueingSetupId] =
+    useState<Id<"router_management_setups"> | null>(null);
+  const [verificationOperationId, setVerificationOperationId] =
+    useState<Id<"router_gateway_operations"> | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!verificationOperationId || !operations) return;
+    const operation = operations.find(
+      (candidate) => candidate._id === verificationOperationId,
+    );
+    if (operation?.status === "succeeded") {
+      toast.success(
+        "API-SSL setup verified successfully by the Ubuntu gateway.",
+      );
+      setVerificationOperationId(null);
+    } else if (operation?.status === "failed") {
+      toast.error(
+        operation.detail ??
+          "API-SSL verification failed. Review the gateway operation details.",
+      );
+      setVerificationOperationId(null);
+    }
+  }, [operations, verificationOperationId]);
 
   const close = (next: boolean) => {
     setOpen(next);
@@ -111,7 +142,9 @@ export default function RouterManagementSetup({ router }: RouterManagementSetupP
       toast.success("One-time RouterOS management script prepared.");
     } catch (error) {
       toast.error(
-        error instanceof Error ? error.message : "Could not prepare the management script.",
+        error instanceof Error
+          ? error.message
+          : "Could not prepare the management script.",
       );
     } finally {
       setSubmitting(false);
@@ -128,26 +161,31 @@ export default function RouterManagementSetup({ router }: RouterManagementSetupP
     }
   };
 
-  const applied = async (id: Id<"router_management_setups">) => {
-    if (!workspaceId) return;
-    try {
-      await markApplied({ workspaceId, setupId: id });
-      toast.success("Recorded as operator-applied; gateway connectivity is not verified.");
-    } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Could not update the setup status.",
-      );
-    }
-  };
-
-  const queueVerification = async (id: Id<"router_management_setups">) => {
-    if (!workspaceId) return;
+  const verifySetup = async (
+    id: Id<"router_management_setups">,
+    alreadyApplied: boolean,
+  ) => {
+    if (!workspaceId || !gatewayCredential?.configured) return;
     setQueueingSetupId(id);
     try {
-      await enqueueVerification({ workspaceId, routerId: router._id, setupId: id });
-      toast.success("Gateway verification queued.");
+      if (!alreadyApplied) {
+        await markApplied({ workspaceId, setupId: id });
+      }
+      const operationId = await enqueueVerification({
+        workspaceId,
+        routerId: router._id,
+        setupId: id,
+      });
+      setVerificationOperationId(operationId);
+      toast.message(
+        "API-SSL verification queued. The app will report the gateway result here.",
+      );
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not queue gateway verification.");
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Could not queue gateway verification.",
+      );
     } finally {
       setQueueingSetupId(null);
     }
@@ -167,19 +205,21 @@ export default function RouterManagementSetup({ router }: RouterManagementSetupP
         <DialogHeader>
           <DialogTitle>Router management gateway</DialogTitle>
           <DialogDescription>
-            Prepare a scoped RouterOS v7 API-SSL account for {router.name}. No credentials or
-            script contents are stored in Convex.
+            Prepare a scoped RouterOS v7 API-SSL account for {router.name}. No
+            credentials or script contents are stored in Convex.
           </DialogDescription>
         </DialogHeader>
 
         <Alert>
           <ShieldCheck className="size-4" />
-          <AlertTitle>Certificate and network prerequisites</AlertTitle>
+          <AlertTitle>What this setup configures</AlertTitle>
           <AlertDescription>
-            Install a trusted server certificate on the router with a SAN matching its management
-            IP. The gateway must trust its issuing CA and validate the certificate name. This
-            script does not alter firewall rules; preserve a local management path and restrict
-            the service at the firewall as well.
+            The script safely creates or reuses the Astrid CA and a server
+            certificate whose IP SAN matches the router address. It configures a
+            gateway-restricted API user, disables plain API, and enables
+            API-SSL. It does not change firewall rules. For automatic
+            verification, the Ubuntu gateway agent must be running with this API
+            account and the Astrid CA certificate trusted.
           </AlertDescription>
         </Alert>
 
@@ -188,21 +228,30 @@ export default function RouterManagementSetup({ router }: RouterManagementSetupP
             <Alert>
               <AlertTitle>One-time API password</AlertTitle>
               <AlertDescription>
-                Save the router ID, API username, and password in the Ubuntu gateway’s protected
-                secret store before closing. The password is never recoverable from this app.
+                Save the router ID, API username, and password in the Ubuntu
+                gateway’s protected secret configuration. Export only the{" "}
+                <code>astrid-api-ca</code> certificate (never its private key)
+                and add it to the gateway CA bundle. The app cannot recover this
+                password after you close this dialog.
               </AlertDescription>
             </Alert>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1">
-                <p className="text-xs font-medium text-muted-foreground">Router ID</p>
+                <p className="text-xs font-medium text-muted-foreground">
+                  Router ID
+                </p>
                 <p className="break-all font-mono text-sm">{router._id}</p>
               </div>
               <div className="space-y-1">
-                <p className="text-xs font-medium text-muted-foreground">API username</p>
+                <p className="text-xs font-medium text-muted-foreground">
+                  API username
+                </p>
                 <p className="break-all font-mono text-sm">{apiUsername}</p>
               </div>
               <div className="space-y-1">
-                <p className="text-xs font-medium text-muted-foreground">One-time password</p>
+                <p className="text-xs font-medium text-muted-foreground">
+                  One-time password
+                </p>
                 <p className="break-all font-mono text-sm">{scriptPassword}</p>
               </div>
             </div>
@@ -212,7 +261,11 @@ export default function RouterManagementSetup({ router }: RouterManagementSetupP
               readOnly
               value={script}
             />
-            <Button type="button" className="w-full" onClick={() => void copyScript()}>
+            <Button
+              type="button"
+              className="w-full"
+              onClick={() => void copyScript()}
+            >
               <Copy className="mr-2 size-4" />
               Copy setup script
             </Button>
@@ -221,11 +274,24 @@ export default function RouterManagementSetup({ router }: RouterManagementSetupP
                 type="button"
                 variant="secondary"
                 className="w-full"
-                onClick={() => void applied(setupId)}
+                disabled={
+                  !gatewayCredential?.configured || queueingSetupId === setupId
+                }
+                onClick={() => void verifySetup(setupId, false)}
               >
-                <Check className="mr-2 size-4" />
-                Mark as applied on router
+                {queueingSetupId === setupId ? (
+                  <LoaderCircle className="mr-2 size-4 animate-spin" />
+                ) : (
+                  <Check className="mr-2 size-4" />
+                )}
+                I ran it — verify API-SSL
               </Button>
+            )}
+            {!gatewayCredential?.configured && (
+              <p className="text-xs text-amber-300">
+                Configure the workspace gateway credential and run the Ubuntu
+                gateway agent to enable automatic verification.
+              </p>
             )}
           </div>
         ) : (
@@ -246,13 +312,15 @@ export default function RouterManagementSetup({ router }: RouterManagementSetupP
                 <Input
                   required
                   value={gatewaySourceAddress}
-                  onChange={(event) => setGatewaySourceAddress(event.target.value)}
+                  onChange={(event) =>
+                    setGatewaySourceAddress(event.target.value)
+                  }
                   placeholder="10.77.0.1"
                   inputMode="decimal"
                 />
               </label>
               <label className="space-y-1 text-sm sm:col-span-2">
-                Installed RouterOS certificate name
+                API-SSL certificate name
                 <Input
                   required
                   value={certificateName}
@@ -263,13 +331,18 @@ export default function RouterManagementSetup({ router }: RouterManagementSetupP
               </label>
             </div>
             <div className="rounded-md border border-border p-3 text-xs text-muted-foreground">
-              This prepares only RouterOS v7 API-SSL on TCP 8729. The gateway and API user are
-              restricted to the selected source IP; the unencrypted API service is disabled.
-              The API account has RouterOS <code>api,read,write</code> policies. Its TLS certificate
-              must already be trusted and match the router management IP.
+              This creates or reuses the Astrid CA and router certificate,
+              generates the scoped API user, disables plain API, and configures
+              API-SSL on port 8729. Run the complete copied script in the main
+              CHR terminal. The script reports success only after verifying its
+              settings. The Ubuntu gateway must trust the exported Astrid CA PEM
+              and have the generated API username/password in its protected
+              local configuration.
             </div>
             <Button type="submit" className="w-full" disabled={submitting}>
-              {submitting && <LoaderCircle className="mr-2 size-4 animate-spin" />}
+              {submitting && (
+                <LoaderCircle className="mr-2 size-4 animate-spin" />
+              )}
               Prepare one-time setup script
             </Button>
           </form>
@@ -285,10 +358,14 @@ export default function RouterManagementSetup({ router }: RouterManagementSetupP
               >
                 <div>
                   <p className="font-medium">
-                    {setup.apiUsername} · {setup.status === "prepared" ? "Script prepared" : "Operator applied"}
+                    {setup.apiUsername} ·{" "}
+                    {setup.status === "prepared"
+                      ? "Script prepared"
+                      : "Operator applied"}
                   </p>
                   <p className="text-muted-foreground">
-                    {setup.gatewaySourceAddress} → {setup.managementAddress}:{setup.apiPort} ·{" "}
+                    {setup.gatewaySourceAddress} → {setup.managementAddress}:
+                    {setup.apiPort} ·{" "}
                     {new Date(setup.createdAt).toLocaleString()}
                   </p>
                 </div>
@@ -296,9 +373,16 @@ export default function RouterManagementSetup({ router }: RouterManagementSetupP
                   <Button
                     size="sm"
                     variant="outline"
-                    onClick={() => void applied(setup._id)}
+                    disabled={
+                      !gatewayCredential?.configured ||
+                      operations === undefined ||
+                      queueingSetupId === setup._id
+                    }
+                    onClick={() => void verifySetup(setup._id, false)}
                   >
-                    Mark applied
+                    {queueingSetupId === setup._id
+                      ? "Queueing…"
+                      : "I ran it — verify"}
                   </Button>
                 )}
                 {setup.status === "operator_applied" && (
@@ -309,21 +393,43 @@ export default function RouterManagementSetup({ router }: RouterManagementSetupP
                       !gatewayCredential?.configured ||
                       operations === undefined ||
                       queueingSetupId === setup._id ||
-                      operations.some((operation) =>
-                        operation.setupId === setup._id &&
-                        (operation.status === "pending" || operation.status === "leased"),
+                      operations.some(
+                        (operation) =>
+                          operation.setupId === setup._id &&
+                          operation.operationType === "verify_management" &&
+                          (operation.status === "pending" ||
+                            operation.status === "leased"),
                       )
                     }
-                    onClick={() => void queueVerification(setup._id)}
+                    onClick={() => void verifySetup(setup._id, true)}
                   >
-                    {queueingSetupId === setup._id ? "Queueing…" : "Verify via gateway"}
+                    {queueingSetupId === setup._id
+                      ? "Queueing…"
+                      : "Verify API-SSL"}
                   </Button>
+                )}
+                {operations?.some(
+                  (operation) =>
+                    operation.setupId === setup._id &&
+                    operation.operationType === "verify_management" &&
+                    operation.status === "succeeded",
+                ) && (
+                  <Alert className="w-full border-green-500/40">
+                    <Check className="size-4 text-green-400" />
+                    <AlertTitle>API-SSL verified</AlertTitle>
+                    <AlertDescription>
+                      The Ubuntu gateway authenticated over TLS and confirmed
+                      TLS 1.2, the certificate, port, API user, gateway-only
+                      access restrictions, and that plain API is disabled.
+                    </AlertDescription>
+                  </Alert>
                 )}
               </div>
             ))}
             <p className="text-xs text-muted-foreground">
-              “Operator applied” is a manual record only; it does not mean the gateway has
-              connected or validated the certificate.
+              “Operator applied” records that you ran the script. A success
+              alert appears only after the Ubuntu gateway connects and verifies
+              the live RouterOS settings.
             </p>
           </section>
         )}
@@ -331,15 +437,24 @@ export default function RouterManagementSetup({ router }: RouterManagementSetupP
           <section className="space-y-2 border-t border-border pt-4">
             <h3 className="text-sm font-medium">Gateway operations</h3>
             {operations.map((operation) => (
-              <div key={operation._id} className="rounded-md bg-muted/40 p-3 text-xs">
+              <div
+                key={operation._id}
+                className="rounded-md bg-muted/40 p-3 text-xs"
+              >
                 <p className="font-medium">
-                  API-SSL verification · {operation.status.replace("_", " ")}
+                  {operation.operationType === "verify_management"
+                    ? "API-SSL verification"
+                    : `PPPoE disconnect${operation.targetSessionId ? ` · ${operation.targetSessionId}` : ""}`}{" "}
+                  · {operation.status.replace("_", " ")}
                 </p>
                 <p className="text-muted-foreground">
-                  Attempt {operation.attemptCount} · queued {new Date(operation.createdAt).toLocaleString()}
+                  Attempt {operation.attemptCount} · queued{" "}
+                  {new Date(operation.createdAt).toLocaleString()}
                 </p>
                 {operation.detail && (
-                  <p className="mt-1 break-words text-muted-foreground">{operation.detail}</p>
+                  <p className="mt-1 break-words text-muted-foreground">
+                    {operation.detail}
+                  </p>
                 )}
               </div>
             ))}

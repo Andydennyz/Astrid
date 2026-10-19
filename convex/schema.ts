@@ -113,6 +113,7 @@ export default defineSchema({
     balance: v.number(),
     isOnline: v.boolean(),
     lastSeen: v.optional(v.string()),
+    serviceExpiresAt: v.optional(v.string()),
     notes: v.optional(v.string()),
     address: v.optional(v.string()),
     // Service credentials for RADIUS authentication
@@ -454,7 +455,13 @@ export default defineSchema({
     workspaceId: v.id("workspaces"),
     routerId: v.id("routers"),
     setupId: v.id("router_management_setups"),
-    operationType: v.literal("verify_management"),
+    operationType: v.union(
+      v.literal("verify_management"),
+      v.literal("disconnect_ppp_session"),
+    ),
+    targetSessionId: v.optional(v.string()),
+    targetUsername: v.optional(v.string()),
+    serviceExpiryAt: v.optional(v.string()),
     status: v.union(
       v.literal("pending"),
       v.literal("leased"),
@@ -462,7 +469,7 @@ export default defineSchema({
       v.literal("failed"),
     ),
     attemptCount: v.number(),
-    createdBy: v.id("users"),
+    createdBy: v.optional(v.id("users")),
     createdAt: v.string(),
     claimedAt: v.optional(v.string()),
     leaseExpiresAt: v.optional(v.number()),
@@ -481,11 +488,31 @@ export default defineSchema({
       "setupId",
       "status",
     ])
+    .index("by_workspace_and_setup_and_operation_type_and_status", [
+      "workspaceId",
+      "setupId",
+      "operationType",
+      "status",
+    ])
+    .index(
+      "by_ws_router_op_session_expiry",
+      [
+        "workspaceId",
+        "routerId",
+        "operationType",
+        "targetSessionId",
+        "serviceExpiryAt",
+      ],
+    )
     .index("by_workspace_and_status_and_created_at", [
       "workspaceId",
       "status",
       "createdAt",
     ])
+    .index(
+      "by_workspace_and_operation_type_and_status_and_created_at",
+      ["workspaceId", "operationType", "status", "createdAt"],
+    )
     .index("by_workspace_and_status_and_lease_expiry", [
       "workspaceId",
       "status",
@@ -568,6 +595,11 @@ export default defineSchema({
     .index("by_workspace_and_router_and_status", [
       "workspaceId",
       "routerId",
+      "status",
+    ])
+    .index("by_workspace_and_subscriber_and_status", [
+      "workspaceId",
+      "subscriberId",
       "status",
     ])
     .index("by_workspace_and_router_and_session_id", [

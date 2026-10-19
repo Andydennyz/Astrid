@@ -92,6 +92,7 @@ describe("Router gateway operations", () => {
     expect(claimed.operation).toMatchObject({
       operationId,
       routerId,
+      operationType: "verify_management",
       managementAddress: "10.77.0.2",
       gatewaySourceAddress: "10.77.0.1",
       apiPort: 8729,

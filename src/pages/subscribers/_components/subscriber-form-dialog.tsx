@@ -38,11 +38,24 @@ type SubscriberFormData = {
   macAddress: string;
   monthlyFee: string;
   balance: string;
+  serviceExpiresAt: string;
   address: string;
   notes: string;
 };
 
-const defaultForm: SubscriberFormData = {
+function localDateTimeValue(date: Date) {
+  const offsetDate = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return offsetDate.toISOString().slice(0, 16);
+}
+
+function defaultServiceExpiry() {
+  const expiry = new Date();
+  expiry.setDate(expiry.getDate() + 30);
+  expiry.setHours(0, 0, 0, 0);
+  return localDateTimeValue(expiry);
+}
+
+const defaultForm: Omit<SubscriberFormData, "serviceExpiresAt"> = {
   name: "",
   email: "",
   phone: "",
@@ -69,7 +82,10 @@ type Props = {
 
 export default function SubscriberFormDialog({ open, onClose, editId }: Props) {
   const { selectedWorkspaceId: workspaceId } = useWorkspace();
-  const [form, setForm] = useState<SubscriberFormData>(defaultForm);
+  const [form, setForm] = useState<SubscriberFormData>({
+    ...defaultForm,
+    serviceExpiresAt: defaultServiceExpiry(),
+  });
   const [saving, setSaving] = useState(false);
 
   const packages = useQuery(
@@ -88,8 +104,8 @@ export default function SubscriberFormDialog({ open, onClose, editId }: Props) {
   const createHotspotSub = useAction(api.subscribers.createHotspot);
   const setHotspotCredentials = useAction(api.subscribers.setHotspotCredentials);
 
-  // Pre-fill when editing
   useEffect(() => {
+    if (!open) return;
     if (editId && existing) {
       setForm({
         name: existing.name,
@@ -106,13 +122,19 @@ export default function SubscriberFormDialog({ open, onClose, editId }: Props) {
         macAddress: existing.macAddress ?? "",
         monthlyFee: String(existing.monthlyFee),
         balance: String(existing.balance),
+        serviceExpiresAt: existing.serviceExpiresAt
+          ? localDateTimeValue(new Date(existing.serviceExpiresAt))
+          : defaultServiceExpiry(),
         address: existing.address ?? "",
         notes: existing.notes ?? "",
       });
     } else if (!editId) {
-      setForm(defaultForm);
+      setForm({
+        ...defaultForm,
+        serviceExpiresAt: defaultServiceExpiry(),
+      });
     }
-  }, [editId, existing]);
+  }, [open, editId, existing]);
 
   const set = (key: keyof SubscriberFormData, val: string) =>
     setForm((prev) => ({ ...prev, [key]: val }));
@@ -123,8 +145,12 @@ export default function SubscriberFormDialog({ open, onClose, editId }: Props) {
     if (!form.phone.trim()) return toast.error("Phone number is required");
     const monthlyFee = parseFloat(form.monthlyFee);
     const balance = parseFloat(form.balance);
+    const serviceExpiry = new Date(form.serviceExpiresAt);
     if (isNaN(monthlyFee)) return toast.error("Monthly fee must be a number");
     if (isNaN(balance)) return toast.error("Balance must be a number");
+    if (!form.serviceExpiresAt || !Number.isFinite(serviceExpiry.getTime())) {
+      return toast.error("Set a valid service expiry date and time");
+    }
 
     setSaving(true);
     try {
@@ -142,6 +168,7 @@ export default function SubscriberFormDialog({ open, onClose, editId }: Props) {
         macAddress: form.macAddress.trim() || undefined,
         monthlyFee,
         balance,
+        serviceExpiresAt: serviceExpiry.toISOString(),
         address: form.address.trim() || undefined,
         notes: form.notes.trim() || undefined,
       };
@@ -444,6 +471,31 @@ export default function SubscriberFormDialog({ open, onClose, editId }: Props) {
               onChange={(e) => set("monthlyFee", e.target.value)}
               className="bg-background border-border text-foreground"
             />
+          </div>
+
+          {/* Service expiry */}
+          <div className="space-y-1.5">
+            <Label
+              htmlFor="subscriber-service-expiry"
+              className="text-xs text-muted-foreground"
+            >
+              Service Expiry *
+            </Label>
+            <Input
+              id="subscriber-service-expiry"
+              type="datetime-local"
+              step="60"
+              required
+              value={form.serviceExpiresAt}
+              onChange={(e) => set("serviceExpiresAt", e.target.value)}
+              className="bg-background border-border text-foreground"
+            />
+            {!editId && (
+              <p className="text-xs text-muted-foreground">
+                Defaults to midnight, 30 days from today. Change the date or
+                time as needed.
+              </p>
+            )}
           </div>
 
           {/* Balance */}

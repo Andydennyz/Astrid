@@ -1,15 +1,38 @@
-import { paginationOptsValidator, paginationResultValidator } from "convex/server";
+import {
+  paginationOptsValidator,
+  paginationResultValidator,
+} from "convex/server";
 import { ConvexError, v } from "convex/values";
-import { action, env, internalMutation, mutation, query } from "./_generated/server";
-import type { MutationCtx } from "./_generated/server";
+import {
+  action,
+  env,
+  internalMutation,
+  mutation,
+  query,
+} from "./_generated/server";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { requireWorkspaceRole } from "./model/workspace";
-import { createInitialInvoice, initialInvoiceValidator } from "./model/initialInvoice";
+import {
+  getRadiusOnlineSubscriberIds,
+  isSubscriberOnline,
+  isSubscriberServiceAvailable,
+} from "./model/subscriberPresence";
+import {
+  createInitialInvoice,
+  initialInvoiceValidator,
+} from "./model/initialInvoice";
 import { encryptSubscriberPassword } from "./subscriberCredentials";
 
-const readRoles = ["owner", "admin", "billing", "network", "read_only"] as const;
+const readRoles = [
+  "owner",
+  "admin",
+  "billing",
+  "network",
+  "read_only",
+] as const;
 const writeRoles = ["owner", "admin", "billing"] as const;
 const subscriberDoc = schema
   .doc("subscribers")
@@ -38,23 +61,64 @@ const subscriberDetails = subscriberDoc.extend({
   transactions: v.array(transactionDoc),
 });
 const statusValidator = v.union(
-  v.literal("active"), v.literal("suspended"), v.literal("expired"), v.literal("pending"),
+  v.literal("active"),
+  v.literal("suspended"),
+  v.literal("expired"),
+  v.literal("pending"),
 );
 const connectionTypeValidator = v.union(
-  v.literal("pppoe"), v.literal("hotspot"), v.literal("static"),
+  v.literal("pppoe"),
+  v.literal("hotspot"),
+  v.literal("static"),
 );
 
-function validateServiceCredentials(username: string, password: string, service: "PPPoE" | "Hotspot") {
+async function hasActiveRadiusSession(
+  ctx: QueryCtx,
+  workspaceId: Id<"workspaces">,
+  subscriberId: Id<"subscribers">,
+) {
+  const [active, interim] = await Promise.all([
+    ctx.db
+      .query("router_sessions")
+      .withIndex("by_workspace_and_subscriber_and_status", (index) =>
+        index
+          .eq("workspaceId", workspaceId)
+          .eq("subscriberId", subscriberId)
+          .eq("status", "active"),
+      )
+      .first(),
+    ctx.db
+      .query("router_sessions")
+      .withIndex("by_workspace_and_subscriber_and_status", (index) =>
+        index
+          .eq("workspaceId", workspaceId)
+          .eq("subscriberId", subscriberId)
+          .eq("status", "interim"),
+      )
+      .first(),
+  ]);
+  return Boolean(active || interim);
+}
+
+function validateServiceCredentials(
+  username: string,
+  password: string,
+  service: "PPPoE" | "Hotspot",
+) {
   const normalizedUsername = username.trim();
   if (
     normalizedUsername.length < 1 ||
     normalizedUsername.length > 64 ||
     [...normalizedUsername].some((character) => character.charCodeAt(0) < 0x20)
   ) {
-    throw new ConvexError(`${service} username must be 1-64 characters without control characters`);
+    throw new ConvexError(
+      `${service} username must be 1-64 characters without control characters`,
+    );
   }
   if (password.length < 8 || password.length > 128) {
-    throw new ConvexError(`${service} password must be between 8 and 128 characters`);
+    throw new ConvexError(
+      `${service} password must be between 8 and 128 characters`,
+    );
   }
   return normalizedUsername;
 }
@@ -63,6 +127,7 @@ type SubscriberActivationFields = {
   workspaceId: Id<"workspaces">;
   connectionType: "pppoe" | "hotspot" | "static";
   packageId?: Id<"packages">;
+  serviceExpiresAt?: string;
   pppoeUsername?: string;
   pppoePasswordCiphertext?: string;
   pppoePasswordIv?: string;
@@ -71,14 +136,158 @@ type SubscriberActivationFields = {
   hotspotPasswordIv?: string;
 };
 
+function normalizeServiceExpiry(value: string) {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) {
+    throw new ConvexError("Service expiry must be a valid date and time");
+  }
+  return new Date(timestamp).toISOString();
+}
+
+async function scheduleServiceExpiry(
+  ctx: MutationCtx,
+  subscriberId: Id<"subscribers">,
+  serviceExpiresAt?: string,
+) {
+  if (!serviceExpiresAt) return;
+  const normalizedExpiry = normalizeServiceExpiry(serviceExpiresAt);
+  await ctx.scheduler.runAt(
+    Date.parse(normalizedExpiry),
+    internal.subscribers.expireService,
+    { subscriberId, expectedExpiry: normalizedExpiry },
+  );
+}
+
+async function queueExpiredPppoeDisconnects(
+  ctx: MutationCtx,
+  subscriber: Doc<"subscribers">,
+) {
+  if (!subscriber.serviceExpiresAt) return;
+  const [activeSessions, interimSessions] = await Promise.all(
+    (["active", "interim"] as const).map((status) =>
+      ctx.db
+        .query("router_sessions")
+        .withIndex("by_workspace_and_subscriber_and_status", (index) =>
+          index
+            .eq("workspaceId", subscriber.workspaceId)
+            .eq("subscriberId", subscriber._id)
+            .eq("status", status),
+        )
+        .take(100),
+    ),
+  );
+  const liveSessions = [...activeSessions, ...interimSessions].filter(
+    (session) =>
+      session.connectionType === "pppoe" &&
+      session.routerId !== undefined &&
+      session.sessionId.length > 0,
+  );
+  const gatewayCredential = await ctx.db
+    .query("router_gateway_credentials")
+    .withIndex("by_workspace", (index) =>
+      index.eq("workspaceId", subscriber.workspaceId),
+    )
+    .first();
+  const handledRouters = new Set<Id<"routers">>();
+
+  for (const session of liveSessions) {
+    const routerId = session.routerId!;
+    const setup = (
+      await ctx.db
+        .query("router_management_setups")
+        .withIndex("by_workspace_and_router", (index) =>
+          index
+            .eq("workspaceId", subscriber.workspaceId)
+            .eq("routerId", routerId),
+        )
+        .order("desc")
+        .take(10)
+    ).find((candidate) => candidate.status === "operator_applied");
+
+    if (!setup || !gatewayCredential) {
+      if (!handledRouters.has(routerId)) {
+        await ctx.db.insert("audit_logs", {
+          workspaceId: subscriber.workspaceId,
+          userId: "system:service-expiry",
+          action: "expiry_disconnect_unavailable",
+          resource: "router_session",
+          resourceId: session._id,
+          details:
+            "Service expired with an active PPPoE session, but the RouterOS API-SSL setup or gateway credential is unavailable to disconnect it",
+          createdAt: new Date().toISOString(),
+        });
+        handledRouters.add(routerId);
+      }
+      continue;
+    }
+
+    const existing = await ctx.db
+      .query("router_gateway_operations")
+      .withIndex(
+        "by_ws_router_op_session_expiry",
+        (index) =>
+          index
+            .eq("workspaceId", subscriber.workspaceId)
+            .eq("routerId", routerId)
+            .eq("operationType", "disconnect_ppp_session")
+            .eq("targetSessionId", session.sessionId)
+            .eq("serviceExpiryAt", subscriber.serviceExpiresAt),
+      )
+      .first();
+    if (existing) continue;
+
+    await ctx.db.insert("router_gateway_operations", {
+      workspaceId: subscriber.workspaceId,
+      routerId,
+      setupId: setup._id,
+      operationType: "disconnect_ppp_session",
+      targetSessionId: session.sessionId,
+      targetUsername: session.username,
+      serviceExpiryAt: subscriber.serviceExpiresAt,
+      status: "pending",
+      attemptCount: 0,
+      createdAt: new Date().toISOString(),
+    });
+  }
+}
+
+async function markSubscriberExpired(
+  ctx: MutationCtx,
+  subscriber: Doc<"subscribers">,
+) {
+  if (subscriber.status !== "expired") {
+    await ctx.db.insert("audit_logs", {
+      workspaceId: subscriber.workspaceId,
+      userId: "system:service-expiry",
+      action: "expire_service",
+      resource: "subscriber",
+      resourceId: subscriber._id,
+      details: "Subscriber service expired at its configured expiry time",
+      createdAt: new Date().toISOString(),
+    });
+  }
+  await ctx.db.patch(subscriber._id, { status: "expired", isOnline: false });
+  await queueExpiredPppoeDisconnects(ctx, subscriber);
+}
+
 async function assertSubscriberCanBeActivated(
   ctx: MutationCtx,
   subscriber: SubscriberActivationFields,
 ) {
+  if (subscriber.serviceExpiresAt !== undefined) {
+    const expiry = Date.parse(subscriber.serviceExpiresAt);
+    if (!Number.isFinite(expiry) || expiry <= Date.now()) {
+      throw new ConvexError(
+        "Service has expired; renew the subscriber before restoring access",
+      );
+    }
+  }
   if (subscriber.connectionType === "static") return;
 
   if (!subscriber.packageId) {
-    throw new ConvexError(`A ${subscriber.connectionType} subscriber needs a service package before activation`);
+    throw new ConvexError(
+      `A ${subscriber.connectionType} subscriber needs a service package before activation`,
+    );
   }
   const pkg = await ctx.db.get(subscriber.packageId);
   if (
@@ -87,23 +296,27 @@ async function assertSubscriberCanBeActivated(
     pkg.type !== subscriber.connectionType ||
     !pkg.isActive
   ) {
-    throw new ConvexError(`Select an active ${subscriber.connectionType} package before activation`);
+    throw new ConvexError(
+      `Select an active ${subscriber.connectionType} package before activation`,
+    );
   }
 
   const hasCredentials =
     subscriber.connectionType === "pppoe"
       ? Boolean(
           subscriber.pppoeUsername &&
-            subscriber.pppoePasswordCiphertext &&
-            subscriber.pppoePasswordIv,
+          subscriber.pppoePasswordCiphertext &&
+          subscriber.pppoePasswordIv,
         )
       : Boolean(
           subscriber.hotspotUsername &&
-            subscriber.hotspotPasswordCiphertext &&
-            subscriber.hotspotPasswordIv,
+          subscriber.hotspotPasswordCiphertext &&
+          subscriber.hotspotPasswordIv,
         );
   if (!hasCredentials) {
-    throw new ConvexError(`Set encrypted ${subscriber.connectionType} credentials before activation`);
+    throw new ConvexError(
+      `Set encrypted ${subscriber.connectionType} credentials before activation`,
+    );
   }
 }
 
@@ -127,7 +340,9 @@ async function credentialUsernameInUse(
       )
       .first(),
   ]);
-  return [pppoe, hotspot].some((subscriber) => subscriber && subscriber._id !== excludeId);
+  return [pppoe, hotspot].some(
+    (subscriber) => subscriber && subscriber._id !== excludeId,
+  );
 }
 
 export const list = query({
@@ -135,55 +350,83 @@ export const list = query({
     workspaceId: v.id("workspaces"),
     paginationOpts: paginationOptsValidator,
     status: v.optional(v.union(statusValidator, v.literal("all"))),
-    connectionType: v.optional(v.union(connectionTypeValidator, v.literal("all"))),
+    connectionType: v.optional(
+      v.union(connectionTypeValidator, v.literal("all")),
+    ),
     search: v.optional(v.string()),
   },
   returns: paginationResultValidator(subscriberListDoc),
   handler: async (ctx, args) => {
     await requireWorkspaceRole(ctx, args.workspaceId, readRoles);
-    const page = args.status && args.status !== "all"
-      ? await ctx.db.query("subscribers")
-          .withIndex("by_workspace_and_status", (q) =>
-            q.eq("workspaceId", args.workspaceId).eq(
-              "status",
-              args.status as "active" | "suspended" | "expired" | "pending",
-            ),
-          )
-          .order("desc")
-          .paginate(args.paginationOpts)
-      : await ctx.db.query("subscribers")
-          .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
-          .order("desc")
-          .paginate(args.paginationOpts);
+    const page =
+      args.status && args.status !== "all"
+        ? await ctx.db
+            .query("subscribers")
+            .withIndex("by_workspace_and_status", (q) =>
+              q
+                .eq("workspaceId", args.workspaceId)
+                .eq(
+                  "status",
+                  args.status as "active" | "suspended" | "expired" | "pending",
+                ),
+            )
+            .order("desc")
+            .paginate(args.paginationOpts)
+        : await ctx.db
+            .query("subscribers")
+            .withIndex("by_workspace", (q) =>
+              q.eq("workspaceId", args.workspaceId),
+            )
+            .order("desc")
+            .paginate(args.paginationOpts);
     const search = args.search?.toLowerCase();
     const filtered = page.page.filter((subscriber) => {
-      if (args.connectionType && args.connectionType !== "all" &&
-          subscriber.connectionType !== args.connectionType) return false;
-      return !search || subscriber.name.toLowerCase().includes(search) ||
+      if (
+        args.connectionType &&
+        args.connectionType !== "all" &&
+        subscriber.connectionType !== args.connectionType
+      )
+        return false;
+      return (
+        !search ||
+        subscriber.name.toLowerCase().includes(search) ||
         subscriber.phone.toLowerCase().includes(search) ||
         (subscriber.email?.toLowerCase().includes(search) ?? false) ||
-        (subscriber.ipAddress?.toLowerCase().includes(search) ?? false);
+        (subscriber.ipAddress?.toLowerCase().includes(search) ?? false)
+      );
     });
-    const enriched = await Promise.all(filtered.map(async (subscriber) => {
-      const pkg = subscriber.packageId ? await ctx.db.get(subscriber.packageId) : null;
-      const safePackage = pkg?.workspaceId === args.workspaceId ? pkg : null;
-      const {
-        pppoeUsername: _username,
-        pppoePassword: _password,
-        pppoePasswordCiphertext: _ciphertext,
-        pppoePasswordIv: _iv,
-        hotspotUsername: _hotspotUsername,
-        hotspotPassword: _hotspotPassword,
-        hotspotPasswordCiphertext: _hotspotCiphertext,
-        hotspotPasswordIv: _hotspotIv,
-        ...safeSubscriber
-      } = subscriber;
-      return {
-        ...safeSubscriber,
-        packageName: safePackage?.name ?? null,
-        packageSpeed: safePackage?.speed ?? null,
-      };
-    }));
+    const enriched = await Promise.all(
+      filtered.map(async (subscriber) => {
+        const [pkg, sessionOnline] = await Promise.all([
+          subscriber.packageId ? ctx.db.get(subscriber.packageId) : null,
+          subscriber.connectionType === "static"
+            ? Promise.resolve(false)
+            : hasActiveRadiusSession(ctx, args.workspaceId, subscriber._id),
+        ]);
+        const safePackage = pkg?.workspaceId === args.workspaceId ? pkg : null;
+        const {
+          pppoeUsername: _username,
+          pppoePassword: _password,
+          pppoePasswordCiphertext: _ciphertext,
+          pppoePasswordIv: _iv,
+          hotspotUsername: _hotspotUsername,
+          hotspotPassword: _hotspotPassword,
+          hotspotPasswordCiphertext: _hotspotCiphertext,
+          hotspotPasswordIv: _hotspotIv,
+          ...safeSubscriber
+        } = subscriber;
+        return {
+          ...safeSubscriber,
+          isOnline:
+            isSubscriberServiceAvailable(subscriber) &&
+            (subscriber.connectionType === "static"
+              ? subscriber.isOnline
+              : sessionOnline),
+          packageName: safePackage?.name ?? null,
+          packageSpeed: safePackage?.speed ?? null,
+        };
+      }),
+    );
     return { ...page, page: enriched };
   },
 });
@@ -195,20 +438,27 @@ export const getById = query({
     await requireWorkspaceRole(ctx, args.workspaceId, readRoles);
     const subscriber = await ctx.db.get(args.id);
     if (!subscriber || subscriber.workspaceId !== args.workspaceId) return null;
-    const [pkg, invoices, transactions] = await Promise.all([
+    const [pkg, invoices, transactions, sessionOnline] = await Promise.all([
       subscriber.packageId ? ctx.db.get(subscriber.packageId) : null,
-      ctx.db.query("invoices")
+      ctx.db
+        .query("invoices")
         .withIndex("by_workspace_and_subscriber", (q) =>
           q.eq("workspaceId", args.workspaceId).eq("subscriberId", args.id),
         )
         .order("desc")
         .take(5),
-      ctx.db.query("transactions")
+      ctx.db
+        .query("transactions")
         .withIndex("by_workspace_and_subscriber", (q) =>
           q.eq("workspaceId", args.workspaceId).eq("subscriberId", args.id),
         )
         .order("desc")
         .take(5),
+      subscriber.connectionType === "static"
+        ? Promise.resolve(
+            subscriber.isOnline && isSubscriberServiceAvailable(subscriber),
+          )
+        : hasActiveRadiusSession(ctx, args.workspaceId, args.id),
     ]);
     const {
       pppoeUsername,
@@ -223,6 +473,8 @@ export const getById = query({
     } = subscriber;
     return {
       ...safeSubscriber,
+      isOnline:
+        sessionOnline && isSubscriberServiceAvailable(subscriber),
       ...(pppoeUsername === undefined ? {} : { pppoeUsername }),
       ...(hotspotUsername === undefined ? {} : { hotspotUsername }),
       package: pkg?.workspaceId === args.workspaceId ? pkg : null,
@@ -237,7 +489,8 @@ export const getPackages = query({
   returns: v.array(packageDoc),
   handler: async (ctx, args) => {
     await requireWorkspaceRole(ctx, args.workspaceId, readRoles);
-    return await ctx.db.query("packages")
+    return await ctx.db
+      .query("packages")
       .withIndex("by_workspace_and_is_active", (q) =>
         q.eq("workspaceId", args.workspaceId).eq("isActive", true),
       )
@@ -248,22 +501,36 @@ export const getPackages = query({
 export const getStats = query({
   args: { workspaceId: v.id("workspaces") },
   returns: v.object({
-    total: v.number(), active: v.number(), suspended: v.number(), expired: v.number(),
-    pending: v.number(), online: v.number(), pppoe: v.number(), hotspot: v.number(),
+    total: v.number(),
+    active: v.number(),
+    suspended: v.number(),
+    expired: v.number(),
+    pending: v.number(),
+    online: v.number(),
+    pppoe: v.number(),
+    hotspot: v.number(),
     staticConn: v.number(),
   }),
   handler: async (ctx, args) => {
     await requireWorkspaceRole(ctx, args.workspaceId, readRoles);
-    const all = await ctx.db.query("subscribers")
-      .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
-      .take(8192);
+    const [all, radiusOnlineSubscriberIds] = await Promise.all([
+      ctx.db
+        .query("subscribers")
+        .withIndex("by_workspace", (q) =>
+          q.eq("workspaceId", args.workspaceId),
+        )
+        .take(8192),
+      getRadiusOnlineSubscriberIds(ctx, args.workspaceId),
+    ]);
     return {
       total: all.length,
       active: all.filter((s) => s.status === "active").length,
       suspended: all.filter((s) => s.status === "suspended").length,
       expired: all.filter((s) => s.status === "expired").length,
       pending: all.filter((s) => s.status === "pending").length,
-      online: all.filter((s) => s.isOnline).length,
+      online: all.filter((subscriber) =>
+        isSubscriberOnline(subscriber, radiusOnlineSubscriberIds),
+      ).length,
       pppoe: all.filter((s) => s.connectionType === "pppoe").length,
       hotspot: all.filter((s) => s.connectionType === "hotspot").length,
       staticConn: all.filter((s) => s.connectionType === "static").length,
@@ -273,15 +540,28 @@ export const getStats = query({
 
 export const create = mutation({
   args: {
-    workspaceId: v.id("workspaces"), name: v.string(), email: v.optional(v.string()),
-    phone: v.string(), status: statusValidator, connectionType: v.literal("static"),
-    packageId: v.optional(v.id("packages")), ipAddress: v.optional(v.string()),
-    macAddress: v.optional(v.string()), monthlyFee: v.number(), balance: v.number(),
-    address: v.optional(v.string()), notes: v.optional(v.string()),
+    workspaceId: v.id("workspaces"),
+    name: v.string(),
+    email: v.optional(v.string()),
+    phone: v.string(),
+    status: statusValidator,
+    connectionType: v.literal("static"),
+    packageId: v.optional(v.id("packages")),
+    ipAddress: v.optional(v.string()),
+    macAddress: v.optional(v.string()),
+    monthlyFee: v.number(),
+    balance: v.number(),
+    serviceExpiresAt: v.optional(v.string()),
+    address: v.optional(v.string()),
+    notes: v.optional(v.string()),
   },
   returns: v.id("subscribers"),
   handler: async (ctx, args): Promise<Id<"subscribers">> => {
-    const { identity } = await requireWorkspaceRole(ctx, args.workspaceId, writeRoles);
+    const { identity } = await requireWorkspaceRole(
+      ctx,
+      args.workspaceId,
+      writeRoles,
+    );
     if (args.packageId) {
       const pkg = await ctx.db.get(args.packageId);
       if (
@@ -289,15 +569,27 @@ export const create = mutation({
         pkg.workspaceId !== args.workspaceId ||
         pkg.type !== args.connectionType
       ) {
-        throw new ConvexError("Select a package matching the subscriber connection type");
+        throw new ConvexError(
+          "Select a package matching the subscriber connection type",
+        );
       }
     }
     const id = await ctx.db.insert("subscribers", {
-      ...args, isOnline: false, createdAt: new Date().toISOString(),
+      ...args,
+      ...(args.serviceExpiresAt === undefined
+        ? {}
+        : { serviceExpiresAt: normalizeServiceExpiry(args.serviceExpiresAt) }),
+      isOnline: false,
+      createdAt: new Date().toISOString(),
     });
+    await scheduleServiceExpiry(ctx, id, args.serviceExpiresAt);
     await ctx.db.insert("audit_logs", {
-      workspaceId: args.workspaceId, userId: identity.tokenIdentifier, action: "create",
-      resource: "subscriber", resourceId: id, details: `Created subscriber: ${args.name}`,
+      workspaceId: args.workspaceId,
+      userId: identity.tokenIdentifier,
+      action: "create",
+      resource: "subscriber",
+      resourceId: id,
+      details: `Created subscriber: ${args.name}`,
       createdAt: new Date().toISOString(),
     });
     return id;
@@ -316,6 +608,7 @@ export const createPppoe = action({
     macAddress: v.optional(v.string()),
     monthlyFee: v.number(),
     balance: v.number(),
+    serviceExpiresAt: v.optional(v.string()),
     address: v.optional(v.string()),
     notes: v.optional(v.string()),
     pppoeUsername: v.string(),
@@ -330,8 +623,15 @@ export const createPppoe = action({
         "Subscriber credential storage is not configured; set PPPOE_CREDENTIAL_ENCRYPTION_KEY on the server",
       );
     }
-    const username = validateServiceCredentials(args.pppoeUsername, args.pppoePassword, "PPPoE");
-    const credential = await encryptSubscriberPassword(args.pppoePassword, encryptionKey);
+    const username = validateServiceCredentials(
+      args.pppoeUsername,
+      args.pppoePassword,
+      "PPPoE",
+    );
+    const credential = await encryptSubscriberPassword(
+      args.pppoePassword,
+      encryptionKey,
+    );
     const {
       pppoeUsername: _username,
       pppoePassword: _password,
@@ -341,12 +641,12 @@ export const createPppoe = action({
     const id: Id<"subscribers"> = await ctx.runMutation(
       internal.subscribers.createCredentialSubscriberInternal,
       {
-      ...subscriberFields,
-      connectionType: "pppoe",
-      username,
-      passwordCiphertext: credential.ciphertext,
-      passwordIv: credential.iv,
-      ...(initialInvoice ? { initialInvoice } : {}),
+        ...subscriberFields,
+        connectionType: "pppoe",
+        username,
+        passwordCiphertext: credential.ciphertext,
+        passwordIv: credential.iv,
+        ...(initialInvoice ? { initialInvoice } : {}),
       },
     );
     return id;
@@ -365,6 +665,7 @@ export const createHotspot = action({
     macAddress: v.optional(v.string()),
     monthlyFee: v.number(),
     balance: v.number(),
+    serviceExpiresAt: v.optional(v.string()),
     address: v.optional(v.string()),
     notes: v.optional(v.string()),
     hotspotUsername: v.string(),
@@ -384,7 +685,10 @@ export const createHotspot = action({
       args.hotspotPassword,
       "Hotspot",
     );
-    const credential = await encryptSubscriberPassword(args.hotspotPassword, encryptionKey);
+    const credential = await encryptSubscriberPassword(
+      args.hotspotPassword,
+      encryptionKey,
+    );
     const {
       hotspotUsername: _username,
       hotspotPassword: _password,
@@ -418,6 +722,7 @@ export const createCredentialSubscriberInternal = internalMutation({
     macAddress: v.optional(v.string()),
     monthlyFee: v.number(),
     balance: v.number(),
+    serviceExpiresAt: v.optional(v.string()),
     address: v.optional(v.string()),
     notes: v.optional(v.string()),
     connectionType: v.union(v.literal("pppoe"), v.literal("hotspot")),
@@ -428,19 +733,35 @@ export const createCredentialSubscriberInternal = internalMutation({
   },
   returns: v.id("subscribers"),
   handler: async (ctx, args): Promise<Id<"subscribers">> => {
-    const { identity } = await requireWorkspaceRole(ctx, args.workspaceId, writeRoles);
+    const { identity } = await requireWorkspaceRole(
+      ctx,
+      args.workspaceId,
+      writeRoles,
+    );
     if (!args.packageId) {
-      throw new ConvexError(`A ${args.connectionType} subscriber must have a matching service package`);
+      throw new ConvexError(
+        `A ${args.connectionType} subscriber must have a matching service package`,
+      );
     }
     const pkg = await ctx.db.get(args.packageId);
-    if (!pkg || pkg.workspaceId !== args.workspaceId || pkg.type !== args.connectionType) {
-      throw new ConvexError(`Select a ${args.connectionType} package in this workspace`);
+    if (
+      !pkg ||
+      pkg.workspaceId !== args.workspaceId ||
+      pkg.type !== args.connectionType
+    ) {
+      throw new ConvexError(
+        `Select a ${args.connectionType} package in this workspace`,
+      );
     }
     if (!pkg.isActive && args.status === "active") {
-      throw new ConvexError(`Select an active ${args.connectionType} package before activation`);
+      throw new ConvexError(
+        `Select an active ${args.connectionType} package before activation`,
+      );
     }
     if (await credentialUsernameInUse(ctx, args.workspaceId, args.username)) {
-      throw new ConvexError(`${args.connectionType} username is already in use`);
+      throw new ConvexError(
+        `${args.connectionType} username is already in use`,
+      );
     }
 
     const {
@@ -454,6 +775,13 @@ export const createCredentialSubscriberInternal = internalMutation({
     } = args;
     const id = await ctx.db.insert("subscribers", {
       ...subscriberFields,
+      ...(subscriberFields.serviceExpiresAt === undefined
+        ? {}
+        : {
+            serviceExpiresAt: normalizeServiceExpiry(
+              subscriberFields.serviceExpiresAt,
+            ),
+          }),
       workspaceId,
       connectionType,
       ...(connectionType === "pppoe"
@@ -470,6 +798,11 @@ export const createCredentialSubscriberInternal = internalMutation({
       isOnline: false,
       createdAt: new Date().toISOString(),
     });
+    await scheduleServiceExpiry(
+      ctx,
+      id,
+      subscriberFields.serviceExpiresAt,
+    );
     await ctx.db.insert("audit_logs", {
       workspaceId: args.workspaceId,
       userId: identity.tokenIdentifier,
@@ -507,8 +840,15 @@ export const setPppoeCredentials = action({
         "Subscriber credential storage is not configured; set PPPOE_CREDENTIAL_ENCRYPTION_KEY on the server",
       );
     }
-    const username = validateServiceCredentials(args.username, args.password, "PPPoE");
-    const credential = await encryptSubscriberPassword(args.password, encryptionKey);
+    const username = validateServiceCredentials(
+      args.username,
+      args.password,
+      "PPPoE",
+    );
+    const credential = await encryptSubscriberPassword(
+      args.password,
+      encryptionKey,
+    );
     await ctx.runMutation(internal.subscribers.setCredentialInternal, {
       workspaceId: args.workspaceId,
       id: args.id,
@@ -536,8 +876,15 @@ export const setHotspotCredentials = action({
         "Subscriber credential storage is not configured; set PPPOE_CREDENTIAL_ENCRYPTION_KEY on the server",
       );
     }
-    const username = validateServiceCredentials(args.username, args.password, "Hotspot");
-    const credential = await encryptSubscriberPassword(args.password, encryptionKey);
+    const username = validateServiceCredentials(
+      args.username,
+      args.password,
+      "Hotspot",
+    );
+    const credential = await encryptSubscriberPassword(
+      args.password,
+      encryptionKey,
+    );
     await ctx.runMutation(internal.subscribers.setCredentialInternal, {
       workspaceId: args.workspaceId,
       id: args.id,
@@ -561,14 +908,20 @@ export const setCredentialInternal = internalMutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const { identity } = await requireWorkspaceRole(ctx, args.workspaceId, writeRoles);
+    const { identity } = await requireWorkspaceRole(
+      ctx,
+      args.workspaceId,
+      writeRoles,
+    );
     const subscriber = await ctx.db.get(args.id);
     if (
       !subscriber ||
       subscriber.workspaceId !== args.workspaceId ||
       subscriber.connectionType !== args.connectionType
     ) {
-      throw new ConvexError(`${args.connectionType} subscriber not found in this workspace`);
+      throw new ConvexError(
+        `${args.connectionType} subscriber not found in this workspace`,
+      );
     }
     if (
       await credentialUsernameInUse(
@@ -578,7 +931,9 @@ export const setCredentialInternal = internalMutation({
         args.id,
       )
     ) {
-      throw new ConvexError(`${args.connectionType} username is already in use`);
+      throw new ConvexError(
+        `${args.connectionType} username is already in use`,
+      );
     }
     await ctx.db.patch(
       args.id,
@@ -611,18 +966,32 @@ export const setCredentialInternal = internalMutation({
 
 export const update = mutation({
   args: {
-    workspaceId: v.id("workspaces"), id: v.id("subscribers"),
-    name: v.optional(v.string()), email: v.optional(v.string()), phone: v.optional(v.string()),
-    status: v.optional(statusValidator), connectionType: v.optional(connectionTypeValidator),
-    packageId: v.optional(v.id("packages")), ipAddress: v.optional(v.string()),
-    macAddress: v.optional(v.string()), monthlyFee: v.optional(v.number()),
-    balance: v.optional(v.number()), address: v.optional(v.string()), notes: v.optional(v.string()),
+    workspaceId: v.id("workspaces"),
+    id: v.id("subscribers"),
+    name: v.optional(v.string()),
+    email: v.optional(v.string()),
+    phone: v.optional(v.string()),
+    status: v.optional(statusValidator),
+    connectionType: v.optional(connectionTypeValidator),
+    packageId: v.optional(v.id("packages")),
+    ipAddress: v.optional(v.string()),
+    macAddress: v.optional(v.string()),
+    monthlyFee: v.optional(v.number()),
+    balance: v.optional(v.number()),
+    serviceExpiresAt: v.optional(v.string()),
+    address: v.optional(v.string()),
+    notes: v.optional(v.string()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const { identity } = await requireWorkspaceRole(ctx, args.workspaceId, writeRoles);
+    const { identity } = await requireWorkspaceRole(
+      ctx,
+      args.workspaceId,
+      writeRoles,
+    );
     const subscriber = await ctx.db.get(args.id);
-    if (!subscriber || subscriber.workspaceId !== args.workspaceId) throw new Error("Subscriber not found");
+    if (!subscriber || subscriber.workspaceId !== args.workspaceId)
+      throw new Error("Subscriber not found");
     const nextConnectionType = args.connectionType ?? subscriber.connectionType;
     const nextPackageId = args.packageId ?? subscriber.packageId;
     const nextStatus = args.status ?? subscriber.status;
@@ -633,7 +1002,9 @@ export const update = mutation({
         pkg.workspaceId !== args.workspaceId ||
         pkg.type !== nextConnectionType
       ) {
-        throw new ConvexError("Select a package matching the subscriber connection type");
+        throw new ConvexError(
+          "Select a package matching the subscriber connection type",
+        );
       }
     }
     if (
@@ -647,14 +1018,62 @@ export const update = mutation({
         ...subscriber,
         connectionType: nextConnectionType,
         packageId: nextPackageId,
+        serviceExpiresAt:
+          args.serviceExpiresAt ?? subscriber.serviceExpiresAt,
       });
     }
     const { workspaceId: _workspaceId, id, ...fields } = args;
-    const updates = Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined));
+    const normalizedExpiry =
+      args.serviceExpiresAt === undefined
+        ? undefined
+        : normalizeServiceExpiry(args.serviceExpiresAt);
+    if (normalizedExpiry !== undefined) {
+      fields.serviceExpiresAt = normalizedExpiry;
+    }
+    const updates: Partial<
+      Pick<
+        Doc<"subscribers">,
+        | "name"
+        | "email"
+        | "phone"
+        | "status"
+        | "connectionType"
+        | "packageId"
+        | "ipAddress"
+        | "macAddress"
+        | "monthlyFee"
+        | "balance"
+        | "serviceExpiresAt"
+        | "address"
+        | "notes"
+        | "isOnline"
+      >
+    > = Object.fromEntries(
+      Object.entries(fields).filter(([, value]) => value !== undefined),
+    );
+    if (!isSubscriberServiceAvailable({
+      status: nextStatus,
+      serviceExpiresAt: normalizedExpiry ?? subscriber.serviceExpiresAt,
+    })) {
+      updates.isOnline = false;
+    }
     await ctx.db.patch(id, updates);
+    if (normalizedExpiry !== undefined) {
+      if (Date.parse(normalizedExpiry) <= Date.now()) {
+        const updatedSubscriber = await ctx.db.get(id);
+        if (updatedSubscriber) {
+          await markSubscriberExpired(ctx, updatedSubscriber);
+        }
+      } else {
+        await scheduleServiceExpiry(ctx, id, normalizedExpiry);
+      }
+    }
     await ctx.db.insert("audit_logs", {
-      workspaceId: args.workspaceId, userId: identity.tokenIdentifier, action: "update",
-      resource: "subscriber", resourceId: id,
+      workspaceId: args.workspaceId,
+      userId: identity.tokenIdentifier,
+      action: "update",
+      resource: "subscriber",
+      resourceId: id,
       details: `Updated subscriber fields: ${Object.keys(updates).join(", ")}`,
       createdAt: new Date().toISOString(),
     });
@@ -663,24 +1082,130 @@ export const update = mutation({
 });
 
 export const updateStatus = mutation({
-  args: { workspaceId: v.id("workspaces"), ids: v.array(v.id("subscribers")), status: statusValidator },
+  args: {
+    workspaceId: v.id("workspaces"),
+    ids: v.array(v.id("subscribers")),
+    status: statusValidator,
+  },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const { identity } = await requireWorkspaceRole(ctx, args.workspaceId, writeRoles);
+    const { identity } = await requireWorkspaceRole(
+      ctx,
+      args.workspaceId,
+      writeRoles,
+    );
     for (const id of args.ids) {
       const subscriber = await ctx.db.get(id);
-      if (!subscriber || subscriber.workspaceId !== args.workspaceId) throw new Error("Subscriber not found");
+      if (!subscriber || subscriber.workspaceId !== args.workspaceId)
+        throw new Error("Subscriber not found");
       if (args.status === "active") {
         await assertSubscriberCanBeActivated(ctx, subscriber);
       }
-      await ctx.db.patch(id, { status: args.status });
+      await ctx.db.patch(id, {
+        status: args.status,
+        ...(args.status === "active" ? {} : { isOnline: false }),
+      });
     }
     await ctx.db.insert("audit_logs", {
-      workspaceId: args.workspaceId, userId: identity.tokenIdentifier,
-      action: "bulk_status_update", resource: "subscriber",
+      workspaceId: args.workspaceId,
+      userId: identity.tokenIdentifier,
+      action: "bulk_status_update",
+      resource: "subscriber",
       details: `Updated ${args.ids.length} subscribers to status: ${args.status}`,
       createdAt: new Date().toISOString(),
     });
+    return null;
+  },
+});
+
+export const extendService = mutation({
+  args: {
+    workspaceId: v.id("workspaces"),
+    id: v.id("subscribers"),
+    mode: v.union(v.literal("extend"), v.literal("renew")),
+    days: v.optional(v.number()),
+  },
+  returns: v.string(),
+  handler: async (ctx, args) => {
+    const { identity } = await requireWorkspaceRole(
+      ctx,
+      args.workspaceId,
+      writeRoles,
+    );
+    const subscriber = await ctx.db.get(args.id);
+    if (!subscriber || subscriber.workspaceId !== args.workspaceId) {
+      throw new ConvexError("Subscriber not found");
+    }
+    const days = args.mode === "renew" ? 30 : args.days;
+    if (
+      days === undefined ||
+      !Number.isInteger(days) ||
+      days < 1 ||
+      days > 3650
+    ) {
+      throw new ConvexError("Service extension must be between 1 and 3650 days");
+    }
+
+    const currentExpiry = subscriber.serviceExpiresAt
+      ? Date.parse(subscriber.serviceExpiresAt)
+      : Number.NaN;
+    if (subscriber.serviceExpiresAt && !Number.isFinite(currentExpiry)) {
+      throw new ConvexError("Subscriber service expiry is invalid");
+    }
+    const now = Date.now();
+    const nextExpiry = new Date(
+      Math.max(now, Number.isFinite(currentExpiry) ? currentExpiry : now) +
+        days * 24 * 60 * 60 * 1000,
+    ).toISOString();
+    const updates: {
+      serviceExpiresAt: string;
+      status?: "active";
+    } = { serviceExpiresAt: nextExpiry };
+    if (args.mode === "renew" && subscriber.status === "expired") {
+      await assertSubscriberCanBeActivated(ctx, {
+        ...subscriber,
+        serviceExpiresAt: nextExpiry,
+      });
+      updates.status = "active";
+    }
+    await ctx.db.patch(args.id, updates);
+    await scheduleServiceExpiry(ctx, args.id, nextExpiry);
+    await ctx.db.insert("audit_logs", {
+      workspaceId: args.workspaceId,
+      userId: identity.tokenIdentifier,
+      action: args.mode === "renew" ? "renew_service" : "extend_service",
+      resource: "subscriber",
+      resourceId: args.id,
+      details: `${args.mode === "renew" ? "Renewed" : "Extended"} service by ${days} days`,
+      createdAt: new Date().toISOString(),
+    });
+    return nextExpiry;
+  },
+});
+
+export const expireService = internalMutation({
+  args: {
+    subscriberId: v.id("subscribers"),
+    expectedExpiry: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const subscriber = await ctx.db.get(args.subscriberId);
+    if (
+      !subscriber ||
+      subscriber.serviceExpiresAt !== args.expectedExpiry
+    ) {
+      return null;
+    }
+    const expiryTimestamp = Date.parse(args.expectedExpiry);
+    if (!Number.isFinite(expiryTimestamp)) {
+      throw new ConvexError("Scheduled service expiry is invalid");
+    }
+    if (expiryTimestamp > Date.now()) {
+      await scheduleServiceExpiry(ctx, args.subscriberId, args.expectedExpiry);
+      return null;
+    }
+    await markSubscriberExpired(ctx, subscriber);
     return null;
   },
 });
@@ -689,25 +1214,46 @@ export const remove = mutation({
   args: { workspaceId: v.id("workspaces"), id: v.id("subscribers") },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const { identity } = await requireWorkspaceRole(ctx, args.workspaceId, writeRoles);
+    const { identity } = await requireWorkspaceRole(
+      ctx,
+      args.workspaceId,
+      writeRoles,
+    );
     const subscriber = await ctx.db.get(args.id);
-    if (!subscriber || subscriber.workspaceId !== args.workspaceId) throw new Error("Subscriber not found");
+    if (!subscriber || subscriber.workspaceId !== args.workspaceId)
+      throw new Error("Subscriber not found");
     const [invoices, transactions, tickets] = await Promise.all([
-      ctx.db.query("invoices").withIndex("by_workspace_and_subscriber", (q) =>
-        q.eq("workspaceId", args.workspaceId).eq("subscriberId", args.id)).take(1),
-      ctx.db.query("transactions").withIndex("by_workspace_and_subscriber", (q) =>
-        q.eq("workspaceId", args.workspaceId).eq("subscriberId", args.id)).take(1),
-      ctx.db.query("tickets").withIndex("by_workspace_and_subscriber", (q) =>
-        q.eq("workspaceId", args.workspaceId).eq("subscriberId", args.id)).take(1),
+      ctx.db
+        .query("invoices")
+        .withIndex("by_workspace_and_subscriber", (q) =>
+          q.eq("workspaceId", args.workspaceId).eq("subscriberId", args.id),
+        )
+        .take(1),
+      ctx.db
+        .query("transactions")
+        .withIndex("by_workspace_and_subscriber", (q) =>
+          q.eq("workspaceId", args.workspaceId).eq("subscriberId", args.id),
+        )
+        .take(1),
+      ctx.db
+        .query("tickets")
+        .withIndex("by_workspace_and_subscriber", (q) =>
+          q.eq("workspaceId", args.workspaceId).eq("subscriberId", args.id),
+        )
+        .take(1),
     ]);
     if (invoices.length || transactions.length || tickets.length) {
       throw new Error("Subscriber has linked records and cannot be deleted");
     }
     await ctx.db.delete(args.id);
     await ctx.db.insert("audit_logs", {
-      workspaceId: args.workspaceId, userId: identity.tokenIdentifier, action: "delete",
-      resource: "subscriber", resourceId: args.id,
-      details: `Deleted subscriber: ${subscriber.name}`, createdAt: new Date().toISOString(),
+      workspaceId: args.workspaceId,
+      userId: identity.tokenIdentifier,
+      action: "delete",
+      resource: "subscriber",
+      resourceId: args.id,
+      details: `Deleted subscriber: ${subscriber.name}`,
+      createdAt: new Date().toISOString(),
     });
     return null;
   },

@@ -104,6 +104,52 @@ def parse_attributes(words: list[str]) -> dict[str, str]:
     return attributes
 
 
+def verify_api_ssl_configuration(
+    operation: dict[str, Any],
+    service_rows: list[dict[str, str]],
+    api_service_rows: list[dict[str, str]],
+    user_rows: list[dict[str, str]],
+) -> None:
+    expected_source = f'{operation["gatewaySourceAddress"]}/32'
+    expected_certificate = operation["certificateName"]
+    expected_username = operation["apiUsername"]
+
+    matching_services = [row for row in service_rows if row.get("name") == "api-ssl"]
+    if len(matching_services) != 1:
+        raise RouterOSError("RouterOS did not report exactly one API-SSL service")
+    service = matching_services[0]
+    if service.get("port") != "8729":
+        raise RouterOSError("RouterOS API-SSL is not configured on port 8729")
+    if service.get("address") != expected_source:
+        raise RouterOSError("RouterOS API-SSL source restriction does not match the gateway")
+    if service.get("certificate") != expected_certificate:
+        raise RouterOSError("RouterOS API-SSL is using a different certificate")
+    if service.get("disabled", "false").lower() in ("true", "yes"):
+        raise RouterOSError("RouterOS API-SSL is disabled")
+    if service.get("tls-version") != "only-1.2":
+        raise RouterOSError("RouterOS API-SSL is not restricted to TLS 1.2")
+
+    matching_api_services = [
+        row for row in api_service_rows if row.get("name") == "api"
+    ]
+    if len(matching_api_services) != 1:
+        raise RouterOSError("RouterOS did not report exactly one plain API service")
+    if matching_api_services[0].get("disabled", "false").lower() not in (
+        "true",
+        "yes",
+    ):
+        raise RouterOSError("Unencrypted RouterOS API is still enabled")
+
+    matching_users = [row for row in user_rows if row.get("name") == expected_username]
+    if len(matching_users) != 1:
+        raise RouterOSError("RouterOS did not report exactly one Astrid API user")
+    user = matching_users[0]
+    if user.get("group") != "astrid-management":
+        raise RouterOSError("RouterOS API user does not use the Astrid management group")
+    if user.get("address") != expected_source:
+        raise RouterOSError("RouterOS API user source restriction does not match the gateway")
+
+
 def run_command(connection: ssl.SSLSocket, *words: str) -> list[dict[str, str]]:
     connection.sendall(encode_sentence(list(words)))
     rows: list[dict[str, str]] = []
@@ -154,10 +200,91 @@ def probe_router(
             run_command(connection, "/login", f"=name={username}", f"=password={password}")
             identity_rows = run_command(connection, "/system/identity/print")
             resource_rows = run_command(connection, "/system/resource/print")
+            service_rows = run_command(
+                connection, "/ip/service/print", "?name=api-ssl"
+            )
+            api_service_rows = run_command(
+                connection, "/ip/service/print", "?name=api"
+            )
+            user_rows = run_command(
+                connection, "/user/print", f"?name={username}"
+            )
+            verify_api_ssl_configuration(
+                operation, service_rows, api_service_rows, user_rows
+            )
 
     identity = identity_rows[0].get("name", "unknown") if identity_rows else "unknown"
     version = resource_rows[0].get("version", "unknown") if resource_rows else "unknown"
     return f"Verified API-SSL; identity={identity}; RouterOS version={version}"
+
+
+def disconnect_ppp_session(
+    connection: ssl.SSLSocket,
+    username: str,
+    session_id: str,
+) -> str:
+    if (
+        not username
+        or len(username) > 64
+        or not session_id
+        or len(session_id) > 256
+        or any(
+            ord(character) < 0x20 or ord(character) == 0x7F
+            for character in username + session_id
+        )
+    ):
+        raise RouterOSError("The queued PPPoE session target is invalid")
+
+    rows = run_command(connection, "/ppp/active/print", f"?name={username}")
+    matches = [
+        row
+        for row in rows
+        if row.get("name") == username and row.get("session-id") == session_id
+    ]
+    if not matches:
+        return "No matching active PPPoE session was found; it may already be disconnected"
+
+    for row in matches:
+        item_id = row.get(".id")
+        if not item_id:
+            raise RouterOSError("RouterOS omitted the active session identifier")
+        run_command(connection, "/ppp/active/remove", f"=.id={item_id}")
+    return "Disconnected the matching PPPoE session"
+
+
+def disconnect_router_session(
+    operation: dict[str, Any],
+    credentials: dict[str, Any],
+    ca_bundle: str | None,
+    timeout: float,
+) -> str:
+    address = str(ipaddress.IPv4Address(operation["managementAddress"]))
+    source = str(ipaddress.IPv4Address(operation["gatewaySourceAddress"]))
+    port = int(operation["apiPort"])
+    if port != 8729:
+        raise RouterOSError("Only RouterOS API-SSL on TCP 8729 is supported")
+    if credentials.get("username") != operation.get("apiUsername"):
+        raise RouterOSError("Local API username does not match the queued router setup")
+    username = credentials.get("username")
+    password = credentials.get("password")
+    if not isinstance(username, str) or not username or not isinstance(password, str) or not password:
+        raise RouterOSError("Router API credentials are missing from the local gateway config")
+    session_username = operation.get("targetUsername")
+    session_id = operation.get("targetSessionId")
+    if not isinstance(session_username, str) or not isinstance(session_id, str):
+        raise RouterOSError("The queued PPPoE session target is incomplete")
+
+    context = ssl.create_default_context(cafile=ca_bundle)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    raw_socket = socket.create_connection(
+        (address, port),
+        timeout=timeout,
+        source_address=(source, 0),
+    )
+    with raw_socket:
+        with context.wrap_socket(raw_socket, server_hostname=address) as connection:
+            run_command(connection, "/login", f"=name={username}", f"=password={password}")
+            return disconnect_ppp_session(connection, session_username, session_id)
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -188,7 +315,7 @@ def load_config(path: Path) -> dict[str, Any]:
     if not isinstance(config.get("routers"), dict):
         raise ValueError("routers must map router IDs to local API credentials")
     config["convex_site_url"] = f"{parsed_url.scheme}://{parsed_url.netloc}"
-    config["poll_interval_seconds"] = int(config.get("poll_interval_seconds", 15))
+    config["poll_interval_seconds"] = int(config.get("poll_interval_seconds", 3))
     config["request_timeout_seconds"] = int(config.get("request_timeout_seconds", 20))
     if not 1 <= config["poll_interval_seconds"] <= 300:
         raise ValueError("poll_interval_seconds must be between 1 and 300")
@@ -234,7 +361,10 @@ class GatewayClient:
             return None
         if not isinstance(operation, dict) or not isinstance(claim_token, str):
             raise GatewayError("Convex returned an incomplete operation claim")
-        if operation.get("operationType") != "verify_management":
+        if operation.get("operationType") not in (
+            "verify_management",
+            "disconnect_ppp_session",
+        ):
             raise GatewayError("Convex returned an unsupported router operation")
         return operation, claim_token
 
@@ -268,18 +398,29 @@ def process_operation(client: GatewayClient, config: dict[str, Any], claim: tupl
         credentials = config["routers"].get(router_id)
         if not isinstance(credentials, dict):
             raise RouterOSError("No local API credentials are configured for this router")
-        detail = probe_router(
-            operation,
-            credentials,
-            credentials.get("ca_bundle", config.get("ca_bundle")),
-            config["request_timeout_seconds"],
-        )
+        ca_bundle = credentials.get("ca_bundle", config.get("ca_bundle"))
+        if operation.get("operationType") == "verify_management":
+            detail = probe_router(
+                operation,
+                credentials,
+                ca_bundle,
+                config["request_timeout_seconds"],
+            )
+        elif operation.get("operationType") == "disconnect_ppp_session":
+            detail = disconnect_router_session(
+                operation,
+                credentials,
+                ca_bundle,
+                config["request_timeout_seconds"],
+            )
+        else:
+            raise RouterOSError("Gateway operation type is unsupported")
         status = "succeeded"
-        logging.info("Router API-SSL verification succeeded for router %s: %s", router_id, detail)
+        logging.info("Router gateway operation succeeded for router %s: %s", router_id, detail)
     except (KeyError, TypeError, ValueError, OSError, ssl.SSLError, RouterOSError) as error:
         status = "failed"
-        detail = f"API-SSL verification failed: {error}"
-        logging.error("Router API-SSL verification failed for router %s: %s", router_id, error)
+        detail = f"Router gateway operation failed: {error}"
+        logging.error("Router gateway operation failed for router %s: %s", router_id, error)
     if not client.complete(operation_id, claim_token, status, detail):
         logging.warning("Gateway operation %s was no longer leased when its result was submitted", operation_id)
 

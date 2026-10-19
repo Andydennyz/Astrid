@@ -9,6 +9,7 @@ import {
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { requireWorkspaceRole } from "./model/workspace";
+import { isSubscriberServiceAvailable } from "./model/subscriberPresence";
 
 const managerRoles = ["owner", "admin", "network"] as const;
 const operationStatus = v.union(
@@ -17,12 +18,17 @@ const operationStatus = v.union(
   v.literal("succeeded"),
   v.literal("failed"),
 );
+const operationType = v.union(
+  v.literal("verify_management"),
+  v.literal("disconnect_ppp_session"),
+);
 const publicOperation = v.object({
   _id: v.id("router_gateway_operations"),
   _creationTime: v.number(),
   routerId: v.id("routers"),
   setupId: v.id("router_management_setups"),
-  operationType: v.literal("verify_management"),
+  operationType,
+  targetSessionId: v.optional(v.string()),
   status: operationStatus,
   attemptCount: v.number(),
   createdAt: v.string(),
@@ -33,13 +39,17 @@ const publicOperation = v.object({
 const claimedOperation = v.object({
   operationId: v.id("router_gateway_operations"),
   routerId: v.id("routers"),
+  operationType,
   managementAddress: v.string(),
   gatewaySourceAddress: v.string(),
   apiPort: v.literal(8729),
   apiUsername: v.string(),
   certificateName: v.string(),
+  targetSessionId: v.optional(v.string()),
+  targetUsername: v.optional(v.string()),
 });
 const leaseDurationMs = 2 * 60 * 1000;
+const maxDisconnectAttempts = 3;
 
 function toHex(bytes: Uint8Array) {
   return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join(
@@ -196,6 +206,7 @@ export const listOperations = query({
         routerId,
         setupId,
         operationType,
+        targetSessionId,
         status,
         attemptCount,
         createdAt,
@@ -208,6 +219,7 @@ export const listOperations = query({
         routerId,
         setupId,
         operationType,
+        ...(targetSessionId === undefined ? {} : { targetSessionId }),
         status,
         attemptCount,
         createdAt,
@@ -253,19 +265,25 @@ export const enqueueManagementVerification = mutation({
     }
     const existing = await ctx.db
       .query("router_gateway_operations")
-      .withIndex("by_workspace_and_setup_and_status", (index) =>
+      .withIndex(
+        "by_workspace_and_setup_and_operation_type_and_status",
+        (index) =>
         index
           .eq("workspaceId", args.workspaceId)
           .eq("setupId", args.setupId)
+          .eq("operationType", "verify_management")
           .eq("status", "pending"),
       )
       .first();
     const leased = await ctx.db
       .query("router_gateway_operations")
-      .withIndex("by_workspace_and_setup_and_status", (index) =>
+      .withIndex(
+        "by_workspace_and_setup_and_operation_type_and_status",
+        (index) =>
         index
           .eq("workspaceId", args.workspaceId)
           .eq("setupId", args.setupId)
+          .eq("operationType", "verify_management")
           .eq("status", "leased"),
       )
       .first();
@@ -308,11 +326,14 @@ export const claimNextOperation = internalMutation({
   ): Promise<{
     operationId: Id<"router_gateway_operations">;
     routerId: Id<"routers">;
+    operationType: "verify_management" | "disconnect_ppp_session";
     managementAddress: string;
     gatewaySourceAddress: string;
     apiPort: 8729;
     apiUsername: string;
     certificateName: string;
+    targetSessionId?: string;
+    targetUsername?: string;
   } | null> => {
     if (!/^[a-f0-9]{64}$/.test(args.claimTokenHash)) {
       throw new ConvexError("Operation lease token hash is invalid");
@@ -336,13 +357,27 @@ export const claimNextOperation = internalMutation({
       });
     }
 
-    const operation = await ctx.db
+    const disconnect = await ctx.db
       .query("router_gateway_operations")
-      .withIndex("by_workspace_and_status_and_created_at", (index) =>
-        index.eq("workspaceId", args.workspaceId).eq("status", "pending"),
+      .withIndex(
+        "by_workspace_and_operation_type_and_status_and_created_at",
+        (index) =>
+          index
+            .eq("workspaceId", args.workspaceId)
+            .eq("operationType", "disconnect_ppp_session")
+            .eq("status", "pending"),
       )
       .order("asc")
       .first();
+    const operation =
+      disconnect ??
+      (await ctx.db
+        .query("router_gateway_operations")
+        .withIndex("by_workspace_and_status_and_created_at", (index) =>
+          index.eq("workspaceId", args.workspaceId).eq("status", "pending"),
+        )
+        .order("asc")
+        .first());
     if (!operation) return null;
     const setup = await ctx.db.get(operation.setupId);
     const router = await ctx.db.get(operation.routerId);
@@ -372,11 +407,18 @@ export const claimNextOperation = internalMutation({
     return {
       operationId: operation._id,
       routerId: router._id,
+      operationType: operation.operationType,
       managementAddress: setup.managementAddress,
       gatewaySourceAddress: setup.gatewaySourceAddress,
       apiPort: setup.apiPort,
       apiUsername: setup.apiUsername,
       certificateName: setup.certificateName,
+      ...(operation.targetSessionId === undefined
+        ? {}
+        : { targetSessionId: operation.targetSessionId }),
+      ...(operation.targetUsername === undefined
+        ? {}
+        : { targetUsername: operation.targetUsername }),
     };
   },
 });
@@ -414,13 +456,73 @@ export const completeOperation = internalMutation({
     }
     const detail =
       args.detail === undefined ? undefined : sanitizeDetail(args.detail);
+    const retryDisconnect =
+      args.status === "failed" &&
+      operation.operationType === "disconnect_ppp_session" &&
+      operation.attemptCount < maxDisconnectAttempts;
     await ctx.db.patch(operationId, {
-      status: args.status,
-      completedAt: new Date().toISOString(),
+      status: retryDisconnect ? "pending" : args.status,
+      completedAt: retryDisconnect ? undefined : new Date().toISOString(),
       claimTokenHash: undefined,
       leaseExpiresAt: undefined,
+      ...(retryDisconnect ? { claimedAt: undefined } : {}),
       ...(detail ? { detail } : {}),
     });
+    const targetSessionId = operation.targetSessionId;
+    if (
+      args.status === "succeeded" &&
+      operation.operationType === "disconnect_ppp_session" &&
+      targetSessionId
+    ) {
+      const session = await ctx.db
+        .query("router_sessions")
+        .withIndex("by_workspace_and_router_and_session_id", (index) =>
+          index
+            .eq("workspaceId", args.workspaceId)
+            .eq("routerId", operation.routerId)
+            .eq("sessionId", targetSessionId),
+        )
+        .first();
+      if (session && session.status !== "stopped") {
+        const stopTime = new Date().toISOString();
+        await ctx.db.patch(session._id, {
+          status: "stopped",
+          stopTime,
+          terminateCause: "Service-Expired",
+        });
+        const subscriberId = session.subscriberId;
+        if (subscriberId) {
+          const [active, interim] = await Promise.all([
+            ctx.db
+              .query("router_sessions")
+              .withIndex("by_workspace_and_subscriber_and_status", (index) =>
+                index
+                  .eq("workspaceId", args.workspaceId)
+                  .eq("subscriberId", subscriberId)
+                  .eq("status", "active"),
+              )
+              .first(),
+            ctx.db
+              .query("router_sessions")
+              .withIndex("by_workspace_and_subscriber_and_status", (index) =>
+                index
+                  .eq("workspaceId", args.workspaceId)
+                  .eq("subscriberId", subscriberId)
+                  .eq("status", "interim"),
+              )
+              .first(),
+          ]);
+          const subscriber = await ctx.db.get(subscriberId);
+          if (subscriber?.workspaceId === args.workspaceId) {
+            await ctx.db.patch(subscriberId, {
+              isOnline:
+                Boolean(active || interim) &&
+                isSubscriberServiceAvailable(subscriber),
+            });
+          }
+        }
+      }
+    }
     await ctx.db.insert("audit_logs", {
       workspaceId: args.workspaceId,
       userId: "router-gateway",
@@ -428,7 +530,9 @@ export const completeOperation = internalMutation({
         args.status === "succeeded" ? "gateway_success" : "gateway_failure",
       resource: "router_gateway_operation",
       resourceId: operationId,
-      details: "Router gateway reported an operation result",
+      details: retryDisconnect
+        ? "Router gateway failed to disconnect a PPPoE session; operation will be retried"
+        : "Router gateway reported an operation result",
       createdAt: new Date().toISOString(),
     });
     return true;
