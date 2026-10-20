@@ -258,6 +258,34 @@ class RouterOsApiEncodingTests(unittest.TestCase):
             ],
         )
 
+    def test_api_ssl_verification_accepts_dedicated_radius_worker_group(self):
+        operation = {
+            "gatewaySourceAddress": "10.77.0.1",
+            "certificateName": "astrid-api-ssl",
+            "apiUsername": "astrid-api-a1b2c3d4e5f6",
+        }
+
+        verify_api_ssl_configuration(
+            operation,
+            [
+                {
+                    "name": "api-ssl",
+                    "port": "8729",
+                    "address": "10.77.0.1/32",
+                    "certificate": "astrid-api-ssl",
+                    "tls-version": "only-1.2",
+                }
+            ],
+            [{"name": "api", "disabled": "true"}],
+            [
+                {
+                    "name": "astrid-api-a1b2c3d4e5f6",
+                    "group": "astrid-radius-worker",
+                    "address": "10.77.0.1/32",
+                }
+            ],
+        )
+
     def test_api_ssl_verification_rejects_an_unrestricted_service(self):
         operation = {
             "gatewaySourceAddress": "10.77.0.1",

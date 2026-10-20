@@ -160,8 +160,13 @@ def verify_api_ssl_configuration(
     if len(matching_users) != 1:
         raise RouterOSError("RouterOS did not report exactly one Astrid API user")
     user = matching_users[0]
-    if user.get("group") != "astrid-management":
-        raise RouterOSError("RouterOS API user does not use the Astrid management group")
+    if user.get("group") not in (
+        "astrid-management",
+        "astrid-radius-worker",
+    ):
+        raise RouterOSError(
+            "RouterOS API user does not use an Astrid management group"
+        )
     if user.get("address") != expected_source:
         raise RouterOSError("RouterOS API user source restriction does not match the gateway")
 
