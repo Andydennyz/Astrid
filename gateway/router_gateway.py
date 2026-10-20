@@ -105,6 +105,17 @@ def parse_attributes(words: list[str]) -> dict[str, str]:
     return attributes
 
 
+def safe_read_error(sentence: list[str]) -> str | None:
+    message = parse_attributes(sentence[1:]).get("message")
+    if not message:
+        return None
+    sanitized = "".join(
+        " " if ord(character) < 0x20 or ord(character) == 0x7F else character
+        for character in message
+    ).strip()
+    return sanitized[:200] or None
+
+
 def verify_api_ssl_configuration(
     operation: dict[str, Any],
     service_rows: list[dict[str, str]],
@@ -177,10 +188,22 @@ def run_command(connection: ssl.SSLSocket, *words: str) -> list[dict[str, str]]:
         if response_type == "!re":
             rows.append(parse_attributes(sentence[1:]))
         elif response_type == "!trap":
-            raise RouterOSError(f"RouterOS rejected command {command}")
+            message = (
+                safe_read_error(sentence)
+                if command == "/radius/print"
+                else None
+            )
+            detail = f": {message}" if message else ""
+            raise RouterOSError(f"RouterOS rejected command {command}{detail}")
         elif response_type == "!fatal":
+            message = (
+                safe_read_error(sentence)
+                if command == "/radius/print"
+                else None
+            )
+            detail = f": {message}" if message else ""
             raise RouterOSError(
-                f"RouterOS closed the API session while executing command {command}"
+                f"RouterOS closed the API session while executing command {command}{detail}"
             )
         elif response_type in ("!done", "!empty"):
             return rows

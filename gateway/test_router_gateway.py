@@ -42,6 +42,29 @@ class RouterOsApiEncodingTests(unittest.TestCase):
 
         self.assertNotIn(secret, str(error.exception))
 
+    def test_radius_read_error_includes_sanitized_routeros_diagnostic(self):
+        class FakeConnection:
+            def __init__(self):
+                self.response = io.BytesIO(
+                    encode_sentence(["!fatal", "=message=not enough permissions\n"])
+                )
+
+            def sendall(self, _data):
+                return None
+
+            def recv(self, length):
+                return self.response.read(length)
+
+        with self.assertRaisesRegex(
+            RouterOSError,
+            r"RouterOS closed the API session while executing command /radius/print: not enough permissions",
+        ):
+            router_gateway.run_command(
+                FakeConnection(),
+                "/radius/print",
+                "=.proplist=.id,comment,service,address,src-address",
+            )
+
     def test_length_encoding_round_trips_all_protocol_ranges(self):
         for length in (0, 0x7F, 0x80, 0x3FFF, 0x4000, 0x1FFFFF, 0x200000, 0x0FFFFFFF, 0x10000000):
             with self.subTest(length=length):
