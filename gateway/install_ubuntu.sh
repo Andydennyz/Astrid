@@ -2,7 +2,7 @@
 (
 set -Eeuo pipefail
 
-ASTRID_GATEWAY_REVISION="e3ee61409d102daeadd05e6527f58a36bd283431"
+ASTRID_GATEWAY_REVISION="536b35ce1c56c2f926bf6b6ab242a71d2e2972ec"
 ASTRID_GATEWAY_BASE_URL="https://raw.githubusercontent.com/Andydennyz/Astrid/${ASTRID_GATEWAY_REVISION}/gateway"
 # Update the pinned revision when either gateway source file changes.
 ASTRID_GATEWAY_TMP="$(mktemp -d)"
@@ -85,7 +85,7 @@ from pathlib import Path
 base_url = os.environ["ASTRID_GATEWAY_BASE_URL"]
 destination = Path(os.environ["ASTRID_GATEWAY_TMP"])
 files = {
-    "router_gateway.py": "a340685a0ea9e1f2d6847a98ab2f28fc7c772b19980ab11556cd33ef3f2a0085",
+    "router_gateway.py": "190e09f12e5f04862c7b7797edd985146e6f6f2f40c7c4064ba95b28fef0652b",
     "astrid-router-gateway.service": "fcd5afbcf476c01b587f1d57a20f87939fc85f04589c6b226b85da16aa4d4beb",
 }
 
