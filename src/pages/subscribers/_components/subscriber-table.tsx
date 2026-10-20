@@ -156,8 +156,10 @@ export default function SubscriberTable({
     try {
       await removeSub({ workspaceId, id });
       toast.success("Subscriber deleted");
-    } catch {
-      toast.error("Failed to delete subscriber");
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to delete subscriber",
+      );
     }
   };
 
@@ -301,11 +303,7 @@ export default function SubscriberTable({
                       <Badge
                         className={`text-[10px] px-2 py-0.5 border ${STATUS_STYLES[effectiveStatus(sub.status, sub.serviceExpiresAt, now)]}`}
                       >
-                        {effectiveStatus(
-                          sub.status,
-                          sub.serviceExpiresAt,
-                          now,
-                        )
+                        {effectiveStatus(sub.status, sub.serviceExpiresAt, now)
                           .charAt(0)
                           .toUpperCase() +
                           effectiveStatus(

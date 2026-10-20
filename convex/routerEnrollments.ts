@@ -1,8 +1,15 @@
 import { ConvexError, v } from "convex/values";
-import { action, internalMutation, mutation, query } from "./_generated/server";
+import {
+  action,
+  env,
+  internalMutation,
+  mutation,
+  query,
+} from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { requireWorkspaceRole } from "./model/workspace";
+import { encryptSubscriberPassword } from "./subscriberCredentials";
 
 const managerRoles = ["owner", "admin", "network"] as const;
 const enrollmentStatus = v.union(
@@ -136,6 +143,11 @@ export const redeem = action({
         message: "Generated RADIUS secret is invalid",
       });
     }
+    if (!env.PPPOE_CREDENTIAL_ENCRYPTION_KEY) {
+      throw new ConvexError(
+        "RADIUS secret storage is not configured; set PPPOE_CREDENTIAL_ENCRYPTION_KEY on the server",
+      );
+    }
     const digest = await crypto.subtle.digest(
       "SHA-256",
       new TextEncoder().encode(args.token),
@@ -144,6 +156,10 @@ export const redeem = action({
     const secretDigest = await crypto.subtle.digest(
       "SHA-256",
       new TextEncoder().encode(args.radiusSecret),
+    );
+    const encryptedSecret = await encryptSubscriberPassword(
+      args.radiusSecret,
+      env.PPPOE_CREDENTIAL_ENCRYPTION_KEY,
     );
     const keyDigest = await crypto.subtle.digest(
       "SHA-256",
@@ -158,6 +174,8 @@ export const redeem = action({
         tokenHash,
         routerPublicKey: args.routerPublicKey,
         radiusSecretHash: toHex(new Uint8Array(secretDigest)),
+        radiusSecretCiphertext: encryptedSecret.ciphertext,
+        radiusSecretIv: encryptedSecret.iv,
         nasIdentifier,
       },
     );
@@ -177,11 +195,22 @@ export const rotateRadiusSecret = action({
       "SHA-256",
       new TextEncoder().encode(radiusSecret),
     );
+    if (!env.PPPOE_CREDENTIAL_ENCRYPTION_KEY) {
+      throw new ConvexError(
+        "RADIUS secret storage is not configured; set PPPOE_CREDENTIAL_ENCRYPTION_KEY on the server",
+      );
+    }
+    const encryptedSecret = await encryptSubscriberPassword(
+      radiusSecret,
+      env.PPPOE_CREDENTIAL_ENCRYPTION_KEY,
+    );
     await ctx.runMutation(
       internal.routerEnrollments.rotateRadiusSecretInternal,
       {
         ...args,
         radiusSecretHash: toHex(new Uint8Array(digest)),
+        radiusSecretCiphertext: encryptedSecret.ciphertext,
+        radiusSecretIv: encryptedSecret.iv,
       },
     );
     return { radiusSecret };
@@ -418,6 +447,8 @@ export const redeemInternal = internalMutation({
     tokenHash: v.string(),
     routerPublicKey: v.string(),
     radiusSecretHash: v.string(),
+    radiusSecretCiphertext: v.string(),
+    radiusSecretIv: v.string(),
     nasIdentifier: v.string(),
   },
   returns: v.id("routers"),
@@ -538,6 +569,8 @@ export const redeemInternal = internalMutation({
       ...(enrollment.model === undefined ? {} : { model: enrollment.model }),
       status: "unknown",
       radiusSecretHash: args.radiusSecretHash,
+      radiusSecretCiphertext: args.radiusSecretCiphertext,
+      radiusSecretIv: args.radiusSecretIv,
       nasIdentifier: args.nasIdentifier,
       routerOsVersion: enrollment.routerOsVersion,
       createdAt: new Date().toISOString(),
@@ -557,6 +590,8 @@ export const rotateRadiusSecretInternal = internalMutation({
     workspaceId: v.id("workspaces"),
     routerId: v.id("routers"),
     radiusSecretHash: v.string(),
+    radiusSecretCiphertext: v.string(),
+    radiusSecretIv: v.string(),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -576,6 +611,8 @@ export const rotateRadiusSecretInternal = internalMutation({
     }
     await ctx.db.patch(args.routerId, {
       radiusSecretHash: args.radiusSecretHash,
+      radiusSecretCiphertext: args.radiusSecretCiphertext,
+      radiusSecretIv: args.radiusSecretIv,
       radiusSecret: undefined,
     });
     return null;

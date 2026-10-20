@@ -330,8 +330,12 @@ describe("PPPoE RADIUS authorization", () => {
       id: subscriberId,
       mode: "renew",
     });
-    expect(Date.parse(renewedExpiry)).toBeGreaterThan(Date.now() + 29 * 86_400_000);
-    await expect(t.run(async (ctx) => ctx.db.get(subscriberId))).resolves.toMatchObject({
+    expect(Date.parse(renewedExpiry)).toBeGreaterThan(
+      Date.now() + 29 * 86_400_000,
+    );
+    await expect(
+      t.run(async (ctx) => ctx.db.get(subscriberId)),
+    ).resolves.toMatchObject({
       status: "active",
       serviceExpiresAt: renewedExpiry,
     });
@@ -388,7 +392,9 @@ describe("PPPoE RADIUS authorization", () => {
       subscriberId,
       expectedExpiry: staleExpiry,
     });
-    await expect(t.run(async (ctx) => ctx.db.get(subscriberId))).resolves.toMatchObject({
+    await expect(
+      t.run(async (ctx) => ctx.db.get(subscriberId)),
+    ).resolves.toMatchObject({
       status: "active",
     });
 
@@ -399,13 +405,17 @@ describe("PPPoE RADIUS authorization", () => {
       subscriberId,
       expectedExpiry: staleExpiry,
     });
-    await expect(t.run(async (ctx) => ctx.db.get(subscriberId))).resolves.toMatchObject({
+    await expect(
+      t.run(async (ctx) => ctx.db.get(subscriberId)),
+    ).resolves.toMatchObject({
       status: "expired",
     });
     const audit = await t.run(async (ctx) =>
       ctx.db
         .query("audit_logs")
-        .withIndex("by_workspace", (index) => index.eq("workspaceId", workspaceId))
+        .withIndex("by_workspace", (index) =>
+          index.eq("workspaceId", workspaceId),
+        )
         .take(10),
     );
     expect(audit.some((entry) => entry.action === "expire_service")).toBe(true);
@@ -480,10 +490,13 @@ describe("PPPoE RADIUS authorization", () => {
       status: "pending",
     });
 
-    const claimed = await t.mutation(internal.routerGateway.claimNextOperation, {
-      workspaceId,
-      claimTokenHash: "b".repeat(64),
-    });
+    const claimed = await t.mutation(
+      internal.routerGateway.claimNextOperation,
+      {
+        workspaceId,
+        claimTokenHash: "b".repeat(64),
+      },
+    );
     expect(claimed).toMatchObject({
       operationId: operations[0]._id,
       operationType: "disconnect_ppp_session",
@@ -501,10 +514,13 @@ describe("PPPoE RADIUS authorization", () => {
     await expect(
       t.run(async (ctx) => ctx.db.get(operations[0]._id)),
     ).resolves.toMatchObject({ status: "pending", attemptCount: 1 });
-    const retried = await t.mutation(internal.routerGateway.claimNextOperation, {
-      workspaceId,
-      claimTokenHash: "c".repeat(64),
-    });
+    const retried = await t.mutation(
+      internal.routerGateway.claimNextOperation,
+      {
+        workspaceId,
+        claimTokenHash: "c".repeat(64),
+      },
+    );
     expect(retried).toMatchObject({ operationId: operations[0]._id });
     await t.mutation(internal.routerGateway.completeOperation, {
       workspaceId,
@@ -535,6 +551,88 @@ describe("PPPoE RADIUS authorization", () => {
       status: "stopped",
       terminateCause: "Service-Expired",
     });
+  });
+
+  it("queues active PPPoE disconnect on suspension and allows login after reactivation", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, workspaceId, routerId, subscriberId } = await setupPppoe(t);
+    const setupId = await owner.mutation(api.routers.recordManagementSetup, {
+      workspaceId,
+      routerId,
+      managementAddress: "10.77.0.2",
+      gatewaySourceAddress: "10.77.0.1",
+      apiUsername: "astrid-api-a1b2c3d4e5f6",
+      certificateName: "astrid-api-ssl",
+      scriptSha256: "a".repeat(64),
+    });
+    await owner.mutation(api.routers.markManagementSetupApplied, {
+      workspaceId,
+      setupId,
+    });
+    await owner.action(api.routerGateway.rotateGatewayCredential, {
+      workspaceId,
+    });
+    await t.run(async (ctx) => {
+      await ctx.db.insert("router_sessions", {
+        workspaceId,
+        routerId,
+        subscriberId,
+        username: "subscriber-1",
+        nasIdentifier: "pppoe-nas",
+        sessionId: "suspend-session-1",
+        status: "active",
+        startTime: new Date().toISOString(),
+        connectionType: "pppoe",
+        createdAt: new Date().toISOString(),
+      });
+    });
+
+    await owner.mutation(api.subscribers.updateStatus, {
+      workspaceId,
+      ids: [subscriberId],
+      status: "suspended",
+    });
+    await expect(
+      t.run(async (ctx) =>
+        ctx.db
+          .query("router_gateway_operations")
+          .withIndex("by_workspace", (index) =>
+            index.eq("workspaceId", workspaceId),
+          )
+          .take(10),
+      ),
+    ).resolves.toMatchObject([
+      {
+        routerId,
+        setupId,
+        operationType: "disconnect_ppp_session",
+        targetSessionId: "suspend-session-1",
+        targetUsername: "subscriber-1",
+        status: "pending",
+      },
+    ]);
+    await expect(
+      t.action(internal.radius_helpers.authorizeSubscriber, {
+        routerId,
+        username: "subscriber-1",
+        password: "temporary-test-password",
+        connectionType: "pppoe",
+      }),
+    ).resolves.toMatchObject({ accepted: false });
+
+    await owner.mutation(api.subscribers.updateStatus, {
+      workspaceId,
+      ids: [subscriberId],
+      status: "active",
+    });
+    await expect(
+      t.action(internal.radius_helpers.authorizeSubscriber, {
+        routerId,
+        username: "subscriber-1",
+        password: "temporary-test-password",
+        connectionType: "pppoe",
+      }),
+    ).resolves.toMatchObject({ accepted: true, subscriberId });
   });
 
   it("records when an active PPPoE session cannot be disconnected because gateway setup is missing", async () => {
@@ -571,7 +669,9 @@ describe("PPPoE RADIUS authorization", () => {
         .take(20),
     );
     expect(
-      audit.some((entry) => entry.action === "expiry_disconnect_unavailable"),
+      audit.some(
+        (entry) => entry.action === "subscriber_disconnect_unavailable",
+      ),
     ).toBe(true);
   });
 
@@ -924,7 +1024,7 @@ describe("RADIUS accounting", () => {
         )
         .unique(),
     );
-    expect(session?.status).toBe("active");
+    expect(session?.status).toBe("interim");
 
     await t.mutation(internal.radius.upsertSession, {
       sessionId: "legacy-interim-session",

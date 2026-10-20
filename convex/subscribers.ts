@@ -25,6 +25,7 @@ import {
   initialInvoiceValidator,
 } from "./model/initialInvoice";
 import { encryptSubscriberPassword } from "./subscriberCredentials";
+import { queueSubscriberPppoeDisconnects } from "./model/routerSessionDisconnect";
 
 const readRoles = [
   "owner",
@@ -158,99 +159,6 @@ async function scheduleServiceExpiry(
   );
 }
 
-async function queueExpiredPppoeDisconnects(
-  ctx: MutationCtx,
-  subscriber: Doc<"subscribers">,
-) {
-  if (!subscriber.serviceExpiresAt) return;
-  const [activeSessions, interimSessions] = await Promise.all(
-    (["active", "interim"] as const).map((status) =>
-      ctx.db
-        .query("router_sessions")
-        .withIndex("by_workspace_and_subscriber_and_status", (index) =>
-          index
-            .eq("workspaceId", subscriber.workspaceId)
-            .eq("subscriberId", subscriber._id)
-            .eq("status", status),
-        )
-        .take(100),
-    ),
-  );
-  const liveSessions = [...activeSessions, ...interimSessions].filter(
-    (session) =>
-      session.connectionType === "pppoe" &&
-      session.routerId !== undefined &&
-      session.sessionId.length > 0,
-  );
-  const gatewayCredential = await ctx.db
-    .query("router_gateway_credentials")
-    .withIndex("by_workspace", (index) =>
-      index.eq("workspaceId", subscriber.workspaceId),
-    )
-    .first();
-  const handledRouters = new Set<Id<"routers">>();
-
-  for (const session of liveSessions) {
-    const routerId = session.routerId!;
-    const setup = (
-      await ctx.db
-        .query("router_management_setups")
-        .withIndex("by_workspace_and_router", (index) =>
-          index
-            .eq("workspaceId", subscriber.workspaceId)
-            .eq("routerId", routerId),
-        )
-        .order("desc")
-        .take(10)
-    ).find((candidate) => candidate.status === "operator_applied");
-
-    if (!setup || !gatewayCredential) {
-      if (!handledRouters.has(routerId)) {
-        await ctx.db.insert("audit_logs", {
-          workspaceId: subscriber.workspaceId,
-          userId: "system:service-expiry",
-          action: "expiry_disconnect_unavailable",
-          resource: "router_session",
-          resourceId: session._id,
-          details:
-            "Service expired with an active PPPoE session, but the RouterOS API-SSL setup or gateway credential is unavailable to disconnect it",
-          createdAt: new Date().toISOString(),
-        });
-        handledRouters.add(routerId);
-      }
-      continue;
-    }
-
-    const existing = await ctx.db
-      .query("router_gateway_operations")
-      .withIndex(
-        "by_ws_router_op_session_expiry",
-        (index) =>
-          index
-            .eq("workspaceId", subscriber.workspaceId)
-            .eq("routerId", routerId)
-            .eq("operationType", "disconnect_ppp_session")
-            .eq("targetSessionId", session.sessionId)
-            .eq("serviceExpiryAt", subscriber.serviceExpiresAt),
-      )
-      .first();
-    if (existing) continue;
-
-    await ctx.db.insert("router_gateway_operations", {
-      workspaceId: subscriber.workspaceId,
-      routerId,
-      setupId: setup._id,
-      operationType: "disconnect_ppp_session",
-      targetSessionId: session.sessionId,
-      targetUsername: session.username,
-      serviceExpiryAt: subscriber.serviceExpiresAt,
-      status: "pending",
-      attemptCount: 0,
-      createdAt: new Date().toISOString(),
-    });
-  }
-}
-
 async function markSubscriberExpired(
   ctx: MutationCtx,
   subscriber: Doc<"subscribers">,
@@ -267,7 +175,12 @@ async function markSubscriberExpired(
     });
   }
   await ctx.db.patch(subscriber._id, { status: "expired", isOnline: false });
-  await queueExpiredPppoeDisconnects(ctx, subscriber);
+  await queueSubscriberPppoeDisconnects(
+    ctx,
+    subscriber,
+    "Subscriber service expired",
+    subscriber.serviceExpiresAt,
+  );
 }
 
 async function assertSubscriberCanBeActivated(
@@ -473,8 +386,7 @@ export const getById = query({
     } = subscriber;
     return {
       ...safeSubscriber,
-      isOnline:
-        sessionOnline && isSubscriberServiceAvailable(subscriber),
+      isOnline: sessionOnline && isSubscriberServiceAvailable(subscriber),
       ...(pppoeUsername === undefined ? {} : { pppoeUsername }),
       ...(hotspotUsername === undefined ? {} : { hotspotUsername }),
       package: pkg?.workspaceId === args.workspaceId ? pkg : null,
@@ -516,9 +428,7 @@ export const getStats = query({
     const [all, radiusOnlineSubscriberIds] = await Promise.all([
       ctx.db
         .query("subscribers")
-        .withIndex("by_workspace", (q) =>
-          q.eq("workspaceId", args.workspaceId),
-        )
+        .withIndex("by_workspace", (q) => q.eq("workspaceId", args.workspaceId))
         .take(8192),
       getRadiusOnlineSubscriberIds(ctx, args.workspaceId),
     ]);
@@ -798,11 +708,7 @@ export const createCredentialSubscriberInternal = internalMutation({
       isOnline: false,
       createdAt: new Date().toISOString(),
     });
-    await scheduleServiceExpiry(
-      ctx,
-      id,
-      subscriberFields.serviceExpiresAt,
-    );
+    await scheduleServiceExpiry(ctx, id, subscriberFields.serviceExpiresAt);
     await ctx.db.insert("audit_logs", {
       workspaceId: args.workspaceId,
       userId: identity.tokenIdentifier,
@@ -1018,8 +924,7 @@ export const update = mutation({
         ...subscriber,
         connectionType: nextConnectionType,
         packageId: nextPackageId,
-        serviceExpiresAt:
-          args.serviceExpiresAt ?? subscriber.serviceExpiresAt,
+        serviceExpiresAt: args.serviceExpiresAt ?? subscriber.serviceExpiresAt,
       });
     }
     const { workspaceId: _workspaceId, id, ...fields } = args;
@@ -1051,13 +956,22 @@ export const update = mutation({
     > = Object.fromEntries(
       Object.entries(fields).filter(([, value]) => value !== undefined),
     );
-    if (!isSubscriberServiceAvailable({
-      status: nextStatus,
-      serviceExpiresAt: normalizedExpiry ?? subscriber.serviceExpiresAt,
-    })) {
+    if (
+      !isSubscriberServiceAvailable({
+        status: nextStatus,
+        serviceExpiresAt: normalizedExpiry ?? subscriber.serviceExpiresAt,
+      })
+    ) {
       updates.isOnline = false;
     }
     await ctx.db.patch(id, updates);
+    if (nextStatus !== "active") {
+      await queueSubscriberPppoeDisconnects(
+        ctx,
+        { ...subscriber, ...updates },
+        `Subscriber status changed to ${nextStatus}`,
+      );
+    }
     if (normalizedExpiry !== undefined) {
       if (Date.parse(normalizedExpiry) <= Date.now()) {
         const updatedSubscriber = await ctx.db.get(id);
@@ -1105,6 +1019,13 @@ export const updateStatus = mutation({
         status: args.status,
         ...(args.status === "active" ? {} : { isOnline: false }),
       });
+      if (args.status !== "active") {
+        await queueSubscriberPppoeDisconnects(
+          ctx,
+          { ...subscriber, status: args.status, isOnline: false },
+          `Subscriber status changed to ${args.status}`,
+        );
+      }
     }
     await ctx.db.insert("audit_logs", {
       workspaceId: args.workspaceId,
@@ -1143,7 +1064,9 @@ export const extendService = mutation({
       days < 1 ||
       days > 3650
     ) {
-      throw new ConvexError("Service extension must be between 1 and 3650 days");
+      throw new ConvexError(
+        "Service extension must be between 1 and 3650 days",
+      );
     }
 
     const currentExpiry = subscriber.serviceExpiresAt
@@ -1191,10 +1114,7 @@ export const expireService = internalMutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const subscriber = await ctx.db.get(args.subscriberId);
-    if (
-      !subscriber ||
-      subscriber.serviceExpiresAt !== args.expectedExpiry
-    ) {
+    if (!subscriber || subscriber.serviceExpiresAt !== args.expectedExpiry) {
       return null;
     }
     const expiryTimestamp = Date.parse(args.expectedExpiry);
@@ -1243,8 +1163,15 @@ export const remove = mutation({
         .take(1),
     ]);
     if (invoices.length || transactions.length || tickets.length) {
-      throw new Error("Subscriber has linked records and cannot be deleted");
+      throw new ConvexError(
+        "This subscriber has linked invoices, payments, or support tickets, so permanent deletion is blocked to preserve billing history. Suspend the subscriber instead.",
+      );
     }
+    await queueSubscriberPppoeDisconnects(
+      ctx,
+      subscriber,
+      "Subscriber deleted",
+    );
     await ctx.db.delete(args.id);
     await ctx.db.insert("audit_logs", {
       workspaceId: args.workspaceId,

@@ -4,6 +4,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 import socket
 import ssl
 import stat
@@ -114,7 +115,11 @@ def verify_api_ssl_configuration(
     expected_certificate = operation["certificateName"]
     expected_username = operation["apiUsername"]
 
-    matching_services = [row for row in service_rows if row.get("name") == "api-ssl"]
+    matching_services = [
+        row
+        for row in service_rows
+        if row.get("name") == "api-ssl" and "certificate" in row
+    ]
     if len(matching_services) != 1:
         raise RouterOSError("RouterOS did not report exactly one API-SSL service")
     service = matching_services[0]
@@ -286,6 +291,85 @@ def disconnect_router_session(
             run_command(connection, "/login", f"=name={username}", f"=password={password}")
             return disconnect_ppp_session(connection, session_username, session_id)
 
+def configure_router_radius(
+    operation: dict[str, Any],
+    credentials: dict[str, Any],
+    ca_bundle: str | None,
+    timeout: float,
+) -> str:
+    address = str(ipaddress.IPv4Address(operation["managementAddress"]))
+    source = str(ipaddress.IPv4Address(operation["gatewaySourceAddress"]))
+    radius_server = str(ipaddress.IPv4Address(operation["radiusServerAddress"]))
+    router_tunnel = str(ipaddress.IPv4Address(operation["routerTunnelAddress"]))
+    nas_identifier = operation.get("nasIdentifier")
+    radius_secret = operation.get("radiusSecret")
+    if not isinstance(nas_identifier, str) or not re.fullmatch(
+        r"astrid-[a-f0-9]{32}", nas_identifier
+    ):
+        raise RouterOSError("The queued RADIUS NAS-Identifier is invalid")
+    if not isinstance(radius_secret, str) or not re.fullmatch(
+        r"[a-f0-9]{64}", radius_secret
+    ):
+        raise RouterOSError("The queued RADIUS shared secret is invalid")
+    port = int(operation["apiPort"])
+    if port != 8729:
+        raise RouterOSError("Only RouterOS API-SSL on TCP 8729 is supported")
+    if credentials.get("username") != operation.get("apiUsername"):
+        raise RouterOSError("Local API username does not match the queued router setup")
+    username = credentials.get("username")
+    password = credentials.get("password")
+    if not isinstance(username, str) or not username or not isinstance(password, str) or not password:
+        raise RouterOSError("Router API credentials are missing from the local gateway config")
+
+    context = ssl.create_default_context(cafile=ca_bundle)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    raw_socket = socket.create_connection(
+        (address, port),
+        timeout=timeout,
+        source_address=(source, 0),
+    )
+    with raw_socket:
+        with context.wrap_socket(raw_socket, server_hostname=address) as connection:
+            run_command(connection, "/login", f"=name={username}", f"=******")
+            radius_rows = run_command(
+                connection,
+                "/radius/print",
+                '?comment=Astrid workspace-wide RADIUS',
+            )
+            if len(radius_rows) > 1:
+                raise RouterOSError("Multiple Astrid RADIUS entries exist on RouterOS")
+            settings = [
+                f"=address={radius_server}",
+                f"=src-address={router_tunnel}",
+                f"=secret={radius_secret}",
+                "=service=ppp",
+                "=authentication-port=1812",
+                "=accounting-port=1813",
+                "=timeout=3s",
+                "=disabled=no",
+                "=comment=Astrid workspace-wide RADIUS",
+            ]
+            if radius_rows:
+                item_id = radius_rows[0].get(".id")
+                if not item_id:
+                    raise RouterOSError("RouterOS omitted the RADIUS entry identifier")
+                run_command(connection, "/radius/set", f"=.id={item_id}", *settings)
+            else:
+                run_command(connection, "/radius/add", *settings)
+            run_command(
+                connection,
+                "/system/identity/set",
+                f"=name={nas_identifier}",
+            )
+            run_command(
+                connection,
+                "/ppp/aaa/set",
+                "=use-radius=yes",
+                "=accounting=yes",
+                "=interim-update=5m",
+            )
+    return "Configured RouterOS PPP RADIUS authentication and accounting"
+
 
 def load_config(path: Path) -> dict[str, Any]:
     if os.name == "posix" and stat.S_IMODE(path.stat().st_mode) & 0o077:
@@ -364,6 +448,7 @@ class GatewayClient:
         if operation.get("operationType") not in (
             "verify_management",
             "disconnect_ppp_session",
+            "configure_radius",
         ):
             raise GatewayError("Convex returned an unsupported router operation")
         return operation, claim_token
@@ -408,6 +493,13 @@ def process_operation(client: GatewayClient, config: dict[str, Any], claim: tupl
             )
         elif operation.get("operationType") == "disconnect_ppp_session":
             detail = disconnect_router_session(
+                operation,
+                credentials,
+                ca_bundle,
+                config["request_timeout_seconds"],
+            )
+        elif operation.get("operationType") == "configure_radius":
+            detail = configure_router_radius(
                 operation,
                 credentials,
                 ca_bundle,

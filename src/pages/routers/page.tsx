@@ -66,7 +66,6 @@ import type { Doc, Id } from "@/convex/_generated/dataModel.d.ts";
 import RouterEnrollment from "./_components/router-enrollment.tsx";
 import RouterManagementSetup from "./_components/router-management-setup.tsx";
 import RouterNetworkAddressDialog from "./_components/router-network-address-dialog.tsx";
-import RouterGatewayCredentials from "./_components/router-gateway-credentials.tsx";
 import RouterFeatureBoundary from "./_components/router-feature-boundary.tsx";
 import { WifiStatus } from "@/components/ui/wifi-status.tsx";
 
@@ -435,9 +434,10 @@ export default function RoutersPage() {
             Router Management
           </h1>
           <p className="text-sm text-muted-foreground mt-1">
-            Securely enroll MikroTik routers and generate matching manual RADIUS
-            configuration. The Ubuntu gateway worker, automated WireGuard
-            provisioning, and live integration verification remain outstanding.
+            Securely enroll MikroTik routers, configure API-SSL with a guided
+            Ubuntu gateway setup, and prepare matching RADIUS configuration.
+            WireGuard peer provisioning remains a separate operator-applied
+            step.
           </p>
         </div>
         <Authenticated>
@@ -493,9 +493,6 @@ export default function RoutersPage() {
 
       <Authenticated>
         <div className="space-y-6">
-          <RouterFeatureBoundary feature="Ubuntu gateway access">
-            <RouterGatewayCredentials />
-          </RouterFeatureBoundary>
           <RoutersPageInner onAddRouter={() => setAddOpen(true)} />
           <RouterEnrollment open={addOpen} onOpenChange={setAddOpen} />
         </div>

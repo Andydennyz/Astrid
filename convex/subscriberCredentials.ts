@@ -45,19 +45,29 @@ export async function encryptSubscriberPassword(
   };
 }
 
+export async function decryptSubscriberPassword(
+  credential: EncryptedCredential,
+  encodedKey: string,
+) {
+  const key = await importKey(encodedKey, ["decrypt"]);
+  const plaintext = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: decodeBase64(credential.iv) },
+    key,
+    decodeBase64(credential.ciphertext),
+  );
+  return new TextDecoder().decode(plaintext);
+}
+
 export async function verifySubscriberPassword(
   password: string,
   credential: EncryptedCredential,
   encodedKey: string,
 ) {
-  const key = await importKey(encodedKey, ["decrypt"]);
   try {
-    const plaintext = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv: decodeBase64(credential.iv) },
-      key,
-      decodeBase64(credential.ciphertext),
+    const savedPassword = await decryptSubscriberPassword(
+      credential,
+      encodedKey,
     );
-    const savedPassword = new TextDecoder().decode(plaintext);
     const submitted = new TextEncoder().encode(password);
     const saved = new TextEncoder().encode(savedPassword);
     let difference = submitted.length ^ saved.length;

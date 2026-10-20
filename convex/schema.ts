@@ -408,6 +408,8 @@ export default defineSchema({
     // RADIUS / billing link
     radiusSecret: v.optional(v.string()),
     radiusSecretHash: v.optional(v.string()),
+    radiusSecretCiphertext: v.optional(v.string()),
+    radiusSecretIv: v.optional(v.string()),
     nasIdentifier: v.string(), // NAS-Identifier sent by this router
     // RouterOS version — drives provisioning script syntax
     routerOsVersion: v.optional(v.union(v.literal("v6"), v.literal("v7"))),
@@ -444,6 +446,18 @@ export default defineSchema({
     .index("by_workspace_and_router", ["workspaceId", "routerId"])
     .index("by_workspace_and_status", ["workspaceId", "status"]),
 
+  router_api_ssl_progress: defineTable({
+    workspaceId: v.id("workspaces"),
+    routerId: v.id("routers"),
+    activeStep: v.number(),
+    gatewayReady: v.boolean(),
+    gatewayConfigSaved: v.boolean(),
+    activeSetupId: v.optional(v.id("router_management_setups")),
+    setupResetAt: v.optional(v.string()),
+    verificationResetAt: v.optional(v.string()),
+    updatedAt: v.string(),
+  }).index("by_workspace_and_router", ["workspaceId", "routerId"]),
+
   router_gateway_credentials: defineTable({
     workspaceId: v.id("workspaces"),
     tokenHash: v.string(),
@@ -458,7 +472,14 @@ export default defineSchema({
     operationType: v.union(
       v.literal("verify_management"),
       v.literal("disconnect_ppp_session"),
+      v.literal("configure_radius"),
     ),
+    connectionType: v.optional(
+      v.union(v.literal("pppoe"), v.literal("hotspot")),
+    ),
+    radiusServerAddress: v.optional(v.string()),
+    routerTunnelAddress: v.optional(v.string()),
+    nasIdentifier: v.optional(v.string()),
     targetSessionId: v.optional(v.string()),
     targetUsername: v.optional(v.string()),
     serviceExpiryAt: v.optional(v.string()),
@@ -494,25 +515,30 @@ export default defineSchema({
       "operationType",
       "status",
     ])
-    .index(
-      "by_ws_router_op_session_expiry",
-      [
-        "workspaceId",
-        "routerId",
-        "operationType",
-        "targetSessionId",
-        "serviceExpiryAt",
-      ],
-    )
+    .index("by_ws_router_op_session_expiry", [
+      "workspaceId",
+      "routerId",
+      "operationType",
+      "targetSessionId",
+      "serviceExpiryAt",
+    ])
+    .index("by_ws_router_op_session", [
+      "workspaceId",
+      "routerId",
+      "operationType",
+      "targetSessionId",
+    ])
     .index("by_workspace_and_status_and_created_at", [
       "workspaceId",
       "status",
       "createdAt",
     ])
-    .index(
-      "by_workspace_and_operation_type_and_status_and_created_at",
-      ["workspaceId", "operationType", "status", "createdAt"],
-    )
+    .index("by_workspace_and_operation_type_and_status_and_created_at", [
+      "workspaceId",
+      "operationType",
+      "status",
+      "createdAt",
+    ])
     .index("by_workspace_and_status_and_lease_expiry", [
       "workspaceId",
       "status",

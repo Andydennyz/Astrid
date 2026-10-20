@@ -92,8 +92,10 @@ export default function SubscriberDetailDrawer({
       await removeSub({ workspaceId, id: subscriberId });
       toast.success("Subscriber deleted");
       onClose();
-    } catch {
-      toast.error("Failed to delete subscriber");
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Failed to delete subscriber",
+      );
     }
   };
 

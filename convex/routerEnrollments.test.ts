@@ -1,12 +1,20 @@
 /// <reference types="vite/client" />
 
 import { convexTest } from "convex-test";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { createWorkspaceFixture } from "../src/test/workspace-fixtures";
 
 const modules = import.meta.glob("./**/*.ts");
+
+beforeEach(() => {
+  vi.stubEnv(
+    "PPPOE_CREDENTIAL_ENCRYPTION_KEY",
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+  );
+});
+afterEach(() => vi.unstubAllEnvs());
 
 function authenticatedTestUser(
   t: ReturnType<typeof convexTest>,
@@ -318,6 +326,9 @@ describe("router enrollment staging", () => {
     });
     expect(createdRouter?.radiusSecretHash).toMatch(/^[a-f0-9]{64}$/);
     expect(createdRouter?.radiusSecretHash).not.toBe(radiusSecret);
+    expect(createdRouter?.radiusSecretCiphertext).toBeTruthy();
+    expect(createdRouter?.radiusSecretCiphertext).not.toBe(radiusSecret);
+    expect(createdRouter?.radiusSecretIv).toBeTruthy();
     expect(createdRouter).not.toHaveProperty("privateKey");
     expect(createdRouter).not.toHaveProperty("radiusSecret");
     const listedRouters = await owner.query(api.routers.list, { workspaceId });
@@ -325,6 +336,8 @@ describe("router enrollment staging", () => {
       { _id: credentials.routerId, nasIdentifier: credentials.nasIdentifier },
     ]);
     expect(listedRouters[0]).not.toHaveProperty("radiusSecretHash");
+    expect(listedRouters[0]).not.toHaveProperty("radiusSecretCiphertext");
+    expect(listedRouters[0]).not.toHaveProperty("radiusSecretIv");
     expect(listedRouters[0]).not.toHaveProperty("privateKey");
     expect(listedRouters[0]).not.toHaveProperty("normalizedName");
     const publicRouter = await owner.query(api.routers.getById, {
@@ -393,7 +406,7 @@ describe("router enrollment staging", () => {
     ).rejects.toThrow(/already enrolled/i);
   });
 
-  it("rotates RADIUS secrets once, stores only the hash, and enforces router scope and manager roles", async () => {
+  it("rotates RADIUS secrets once, stores a hash and encrypted copy, and enforces router scope and manager roles", async () => {
     const t = convexTest(schema, modules);
     const owner = authenticatedTestUser(t, "radius-rotation-owner");
     const reader = authenticatedTestUser(t, "radius-rotation-reader");
@@ -472,6 +485,10 @@ describe("router enrollment staging", () => {
     ).join("");
     const rotatedRouter = await t.run(async (ctx) => ctx.db.get(routerId));
     expect(rotatedRouter?.radiusSecretHash).toBe(expectedHashHex);
+    expect(rotatedRouter?.radiusSecretCiphertext).not.toBe(
+      rotation.radiusSecret,
+    );
+    expect(rotatedRouter?.radiusSecretIv).toBeTruthy();
     expect(rotatedRouter).not.toHaveProperty("radiusSecret");
 
     const publicRouter = await owner.query(api.routers.getById, {
@@ -480,6 +497,7 @@ describe("router enrollment staging", () => {
     });
     expect(publicRouter).not.toHaveProperty("radiusSecret");
     expect(publicRouter).not.toHaveProperty("radiusSecretHash");
+    expect(publicRouter).not.toHaveProperty("radiusSecretCiphertext");
   });
 
   it("does not allow a new enrollment to reuse a registered router name", async () => {

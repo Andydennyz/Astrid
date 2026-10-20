@@ -525,10 +525,11 @@ export default function RouterEnrollment({
               <Alert>
                 <AlertTitle>Enrollment successful — router added</AlertTitle>
                 <AlertDescription>
-                  The router record and NAS identity are ready. Convex stores
-                  only the RADIUS secret hash. Configure the WireGuard tunnel
-                  first; the snippets below configure RADIUS and offer service
-                  scripts, but do not create a WireGuard peer or change
+                  The router record and NAS identity are ready. Convex stores a
+                  hash and encrypted copy of the RADIUS shared secret. Configure
+                  the WireGuard tunnel and FreeRADIUS client first; the API-SSL
+                  wizard will apply the MikroTik PPPoE RADIUS settings. The
+                  snippets below do not create a WireGuard peer or change
                   interface addresses and firewall rules. After closing this
                   dialog, the router appears in the Routers section above.
                 </AlertDescription>
@@ -582,9 +583,10 @@ export default function RouterEnrollment({
                     </Button>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    Convex stores only a SHA-256 hash. If the request reports an
-                    error, retry before closing this dialog; the same secret
-                    will be used to safely complete redemption.
+                    Convex stores a SHA-256 hash and an encrypted copy so the
+                    API-SSL gateway can configure the router later. If the
+                    request reports an error, retry before closing this dialog;
+                    the same secret will be used to safely complete redemption.
                   </p>
                 </div>
               )}
@@ -595,10 +597,11 @@ export default function RouterEnrollment({
                       Prepare matching RADIUS configuration
                     </p>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      Use the addresses assigned to this WireGuard link. The
-                      RouterOS script also sets its system identity to the
-                      registered NAS-Identifier. Applying it enables RADIUS on
-                      every existing HotSpot profile you select below.
+                      Use the addresses assigned to this WireGuard link. For
+                      PPPoE, add the FreeRADIUS client block on Ubuntu, then
+                      complete the API-SSL wizard to apply the MikroTik RADIUS
+                      settings automatically. The RouterOS script remains
+                      available as a manual fallback.
                     </p>
                   </div>
                   <div className="space-y-2">
@@ -742,10 +745,11 @@ export default function RouterEnrollment({
                       <Alert>
                         <AlertTitle>Keep these snippets private</AlertTitle>
                         <AlertDescription>
-                          Both configurations contain the RADIUS shared secret.
-                          Add the client block to FreeRADIUS, require
-                          Message-Authenticator, reload FreeRADIUS, then apply
-                          the RouterOS script over a trusted local session.
+                          Both snippets contain the shared secret. Add the
+                          client block to FreeRADIUS and require
+                          Message-Authenticator before applying PPPoE RADIUS
+                          settings with API-SSL. Use the RouterOS script only as
+                          a manual fallback.
                         </AlertDescription>
                       </Alert>
                     </div>

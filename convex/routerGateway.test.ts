@@ -1,13 +1,14 @@
 /// <reference types="vite/client" />
 
 import { convexTest } from "convex-test";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { api } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { createWorkspaceFixture } from "../src/test/workspace-fixtures";
 
 const modules = import.meta.glob("./**/*.ts");
+afterEach(() => vi.unstubAllEnvs());
 
 function authenticatedTestUser(t: ReturnType<typeof convexTest>) {
   return t.withIdentity({
@@ -20,11 +21,123 @@ function authenticatedTestUser(t: ReturnType<typeof convexTest>) {
 }
 
 describe("Router gateway operations", () => {
+  it("applies PPP RADIUS settings over API-SSL without storing the shared secret in plaintext", async () => {
+    vi.stubEnv(
+      "PPPOE_CREDENTIAL_ENCRYPTION_KEY",
+      "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    );
+    const t = convexTest(schema, modules);
+    const owner = authenticatedTestUser(t);
+    const workspaceId = await createWorkspaceFixture(
+      t,
+      owner,
+      "RADIUS configuration workspace",
+    );
+    const routerId = await t.run(async (ctx) =>
+      ctx.db.insert("routers", {
+        workspaceId,
+        name: "RADIUS test router",
+        publicKey: "radius-router-public-key",
+        tunnelIp: "10.77.0.2/32",
+        nasIdentifier: `astrid-${"a".repeat(32)}`,
+        status: "unknown",
+        createdAt: new Date().toISOString(),
+      }),
+    );
+    const setupId = await owner.mutation(api.routers.recordManagementSetup, {
+      workspaceId,
+      routerId,
+      managementAddress: "10.77.0.2",
+      gatewaySourceAddress: "10.77.0.1",
+      apiUsername: "astrid-api-a1b2c3d4e5f6",
+      certificateName: "astrid-api-ssl",
+      scriptSha256: "a".repeat(64),
+    });
+    await owner.mutation(api.routers.markManagementSetupApplied, {
+      workspaceId,
+      setupId,
+    });
+    const gatewayCredential = await owner.action(
+      api.routerGateway.rotateGatewayCredential,
+      { workspaceId },
+    );
+    const verificationId = await owner.mutation(
+      api.routerGateway.enqueueManagementVerification,
+      { workspaceId, routerId, setupId },
+    );
+    const headers = {
+      Authorization: `Bearer ${gatewayCredential.token}`,
+      "Content-Type": "application/json",
+    };
+    const verificationClaim = await t.fetch(
+      "/api/router-gateway/operations/claim",
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ workspaceId }),
+      },
+    );
+    const claimedVerification = await verificationClaim.json();
+    await t.fetch("/api/router-gateway/operations/complete", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        workspaceId,
+        operationId: verificationId,
+        claimToken: claimedVerification.claimToken,
+        status: "succeeded",
+        detail: "Verified",
+      }),
+    });
+
+    const radiusSecret = "b".repeat(64);
+    const configurationId = await owner.action(
+      api.routerGateway.configureRadius,
+      { workspaceId, routerId, setupId, radiusSecret },
+    );
+    const savedRouter = await t.run(async (ctx) => ctx.db.get(routerId));
+    expect(savedRouter?.radiusSecretHash).toHaveLength(64);
+    expect(savedRouter?.radiusSecretCiphertext).not.toBe(radiusSecret);
+    expect(savedRouter?.radiusSecretIv).toBeTruthy();
+    expect(savedRouter?.radiusSecret).toBeUndefined();
+
+    const configurationClaim = await t.fetch(
+      "/api/router-gateway/operations/claim",
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ workspaceId }),
+      },
+    );
+    expect(configurationClaim.status).toBe(200);
+    const claimedConfiguration = await configurationClaim.json();
+    expect(claimedConfiguration.operation).toMatchObject({
+      operationId: configurationId,
+      operationType: "configure_radius",
+      radiusServerAddress: "10.77.0.1",
+      routerTunnelAddress: "10.77.0.2",
+      nasIdentifier: `astrid-${"a".repeat(32)}`,
+      radiusSecret,
+    });
+    expect(claimedConfiguration.operation).not.toHaveProperty(
+      "radiusSecretCiphertext",
+    );
+    expect(claimedConfiguration.operation).not.toHaveProperty("radiusSecretIv");
+  });
+
   it("scopes gateway tokens to a workspace and leases API-SSL checks without exposing secrets", async () => {
     const t = convexTest(schema, modules);
     const owner = authenticatedTestUser(t);
-    const workspaceId = await createWorkspaceFixture(t, owner, "Gateway workspace");
-    const otherWorkspaceId = await createWorkspaceFixture(t, owner, "Other gateway workspace");
+    const workspaceId = await createWorkspaceFixture(
+      t,
+      owner,
+      "Gateway workspace",
+    );
+    const otherWorkspaceId = await createWorkspaceFixture(
+      t,
+      owner,
+      "Other gateway workspace",
+    );
     const routerId: Id<"routers"> = await t.run(async (ctx) =>
       ctx.db.insert("routers", {
         workspaceId,
@@ -51,14 +164,23 @@ describe("Router gateway operations", () => {
         setupId,
       }),
     ).rejects.toThrow(/mark the API-SSL setup as applied/i);
-    await owner.mutation(api.routers.markManagementSetupApplied, { workspaceId, setupId });
-
-    const credential = await owner.action(api.routerGateway.rotateGatewayCredential, {
+    await owner.mutation(api.routers.markManagementSetupApplied, {
       workspaceId,
+      setupId,
     });
+
+    const credential = await owner.action(
+      api.routerGateway.rotateGatewayCredential,
+      {
+        workspaceId,
+      },
+    );
     const storedCredential = await t.run(async (ctx) =>
-      ctx.db.query("router_gateway_credentials")
-        .withIndex("by_workspace", (index) => index.eq("workspaceId", workspaceId))
+      ctx.db
+        .query("router_gateway_credentials")
+        .withIndex("by_workspace", (index) =>
+          index.eq("workspaceId", workspaceId),
+        )
         .first(),
     );
     expect(storedCredential?.tokenHash).not.toBe(credential.token);
@@ -79,14 +201,17 @@ describe("Router gateway operations", () => {
       }),
     ).resolves.toBe(operationId);
 
-    const claimResponse = await t.fetch("/api/router-gateway/operations/claim", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${credential.token}`,
-        "Content-Type": "application/json",
+    const claimResponse = await t.fetch(
+      "/api/router-gateway/operations/claim",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${credential.token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ workspaceId }),
       },
-      body: JSON.stringify({ workspaceId }),
-    });
+    );
     expect(claimResponse.status).toBe(200);
     const claimed = await claimResponse.json();
     expect(claimed.operation).toMatchObject({
@@ -103,45 +228,54 @@ describe("Router gateway operations", () => {
     expect(claimed.operation).not.toHaveProperty("apiPassword");
     expect(claimed.claimToken).toMatch(/^[a-f0-9]{64}$/);
 
-    const otherWorkspaceResponse = await t.fetch("/api/router-gateway/operations/claim", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${credential.token}`,
-        "Content-Type": "application/json",
+    const otherWorkspaceResponse = await t.fetch(
+      "/api/router-gateway/operations/claim",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${credential.token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ workspaceId: otherWorkspaceId }),
       },
-      body: JSON.stringify({ workspaceId: otherWorkspaceId }),
-    });
+    );
     expect(otherWorkspaceResponse.status).toBe(401);
 
-    const invalidCompletion = await t.fetch("/api/router-gateway/operations/complete", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${credential.token}`,
-        "Content-Type": "application/json",
+    const invalidCompletion = await t.fetch(
+      "/api/router-gateway/operations/complete",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${credential.token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          workspaceId,
+          operationId,
+          claimToken: "0".repeat(64),
+          status: "succeeded",
+        }),
       },
-      body: JSON.stringify({
-        workspaceId,
-        operationId,
-        claimToken: "0".repeat(64),
-        status: "succeeded",
-      }),
-    });
+    );
     expect(invalidCompletion.status).toBe(409);
 
-    const completionResponse = await t.fetch("/api/router-gateway/operations/complete", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${credential.token}`,
-        "Content-Type": "application/json",
+    const completionResponse = await t.fetch(
+      "/api/router-gateway/operations/complete",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${credential.token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          workspaceId,
+          operationId,
+          claimToken: claimed.claimToken,
+          status: "succeeded",
+          detail: "Router identity check passed",
+        }),
       },
-      body: JSON.stringify({
-        workspaceId,
-        operationId,
-        claimToken: claimed.claimToken,
-        status: "succeeded",
-        detail: "Router identity check passed",
-      }),
-    });
+    );
     expect(completionResponse.status).toBe(200);
     await expect(
       owner.query(api.routerGateway.listOperations, { workspaceId, routerId }),
@@ -153,25 +287,35 @@ describe("Router gateway operations", () => {
       },
     ]);
 
-    const rotatedCredential = await owner.action(api.routerGateway.rotateGatewayCredential, {
-      workspaceId,
-    });
-    expect(rotatedCredential.token).not.toBe(credential.token);
-    const oldCredentialResponse = await t.fetch("/api/router-gateway/operations/claim", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${credential.token}`,
-        "Content-Type": "application/json",
+    const rotatedCredential = await owner.action(
+      api.routerGateway.rotateGatewayCredential,
+      {
+        workspaceId,
       },
-      body: JSON.stringify({ workspaceId }),
-    });
+    );
+    expect(rotatedCredential.token).not.toBe(credential.token);
+    const oldCredentialResponse = await t.fetch(
+      "/api/router-gateway/operations/claim",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${credential.token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ workspaceId }),
+      },
+    );
     expect(oldCredentialResponse.status).toBe(401);
   });
 
   it("rejects credential rotation from read-only members", async () => {
     const t = convexTest(schema, modules);
     const owner = authenticatedTestUser(t);
-    const workspaceId = await createWorkspaceFixture(t, owner, "Read-only gateway workspace");
+    const workspaceId = await createWorkspaceFixture(
+      t,
+      owner,
+      "Read-only gateway workspace",
+    );
     const reader = t.withIdentity({
       issuer: "https://issuer.example.test",
       subject: "gateway-reader",

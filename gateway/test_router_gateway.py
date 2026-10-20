@@ -5,6 +5,7 @@ from unittest.mock import patch
 import router_gateway
 from router_gateway import (
     decode_length,
+    configure_router_radius,
     disconnect_ppp_session,
     encode_length,
     encode_sentence,
@@ -23,6 +24,59 @@ class RouterOsApiEncodingTests(unittest.TestCase):
                 decoded = decode_length(lambda size: stream.read(size))
                 self.assertEqual(decoded, length)
                 self.assertEqual(stream.read(), b"")
+
+    def test_radius_configuration_uses_api_ssl_without_creating_local_ppp_secrets(self):
+        operation = {
+            "managementAddress": "10.77.0.2",
+            "gatewaySourceAddress": "10.77.0.1",
+            "apiPort": 8729,
+            "apiUsername": "astrid-api-123456789abc",
+            "radiusServerAddress": "10.77.0.1",
+            "routerTunnelAddress": "10.77.0.2",
+            "nasIdentifier": "astrid-" + "a" * 32,
+            "radiusSecret": "b" * 64,
+        }
+        credentials = {
+            "username": "astrid-api-123456789abc",
+            "password": "router-api-password",
+        }
+        raw_socket = unittest.mock.MagicMock()
+        connection = unittest.mock.MagicMock()
+        raw_socket.__enter__.return_value = raw_socket
+        raw_socket.__exit__.return_value = False
+        connection_context = unittest.mock.MagicMock()
+        connection_context.__enter__.return_value = connection
+        connection_context.__exit__.return_value = False
+        tls_context = unittest.mock.MagicMock()
+        tls_context.wrap_socket.return_value = connection_context
+
+        with (
+            patch("router_gateway.socket.create_connection", return_value=raw_socket),
+            patch("router_gateway.ssl.create_default_context", return_value=tls_context),
+            patch(
+                "router_gateway.run_command",
+                side_effect=lambda *_args: [],
+            ) as run_command,
+        ):
+            detail = configure_router_radius(
+                operation,
+                credentials,
+                "/etc/astrid/router-ca.pem",
+                10,
+            )
+
+        self.assertEqual(
+            detail,
+            "Configured RouterOS PPP RADIUS authentication and accounting",
+        )
+        commands = [call.args[1:] for call in run_command.call_args_list]
+        self.assertEqual(commands[0][0], "/login")
+        self.assertEqual(commands[1], ("/radius/print", "?comment=Astrid workspace-wide RADIUS"))
+        self.assertEqual(commands[2][0], "/radius/add")
+        self.assertIn("=secret=" + "b" * 64, commands[2])
+        self.assertIn("=service=ppp", commands[2])
+        self.assertIn(("/ppp/aaa/set", "=use-radius=yes", "=accounting=yes", "=interim-update=5m"), commands)
+        self.assertFalse(any(command[0] == "/ppp/secret/add" for command in commands))
 
     def test_sentence_words_are_utf8_length_prefixed_and_terminated(self):
         encoded = encode_sentence(["/system/identity/print", "=name=Router-é"])
@@ -97,6 +151,42 @@ class RouterOsApiEncodingTests(unittest.TestCase):
                     }
                 ],
             )
+
+    def test_api_ssl_verification_ignores_sparse_active_connection_row(self):
+        operation = {
+            "gatewaySourceAddress": "10.77.0.1",
+            "certificateName": "astrid-api-ssl",
+            "apiUsername": "astrid-api-a1b2c3d4e5f6",
+        }
+
+        verify_api_ssl_configuration(
+            operation,
+            [
+                {
+                    ".id": "*9",
+                    "name": "api-ssl",
+                    "port": "8729",
+                    "address": "10.77.0.1/32",
+                    "certificate": "astrid-api-ssl",
+                    "disabled": "false",
+                    "tls-version": "only-1.2",
+                },
+                {
+                    ".id": "*11",
+                    "name": "api-ssl",
+                    "port": "8729",
+                    "disabled": "false",
+                },
+            ],
+            [{"name": "api", "disabled": "true"}],
+            [
+                {
+                    "name": "astrid-api-a1b2c3d4e5f6",
+                    "group": "astrid-management",
+                    "address": "10.77.0.1/32",
+                }
+            ],
+        )
 
     def test_api_ssl_verification_rejects_enabled_plain_api(self):
         operation = {

@@ -2,6 +2,7 @@ import { httpRouter } from "convex/server";
 import { env, httpAction } from "./_generated/server";
 import type { ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
+import { decryptSubscriberPassword } from "./subscriberCredentials";
 
 const http = httpRouter();
 
@@ -24,7 +25,8 @@ function requestValue(
   key: string,
   radiusAttribute?: string,
 ): unknown {
-  const value = body[key] ?? (radiusAttribute ? body[radiusAttribute] : undefined);
+  const value =
+    body[key] ?? (radiusAttribute ? body[radiusAttribute] : undefined);
   if (!isRecord(value)) return value;
   const values = value.value;
   return Array.isArray(values) ? values[0] : values;
@@ -34,7 +36,11 @@ function radiusConnectionType(
   body: Record<string, unknown>,
 ): "pppoe" | "hotspot" | null | undefined {
   const explicitService = requestValue(body, "service");
-  if (explicitService !== undefined && explicitService !== null && explicitService !== "") {
+  if (
+    explicitService !== undefined &&
+    explicitService !== null &&
+    explicitService !== ""
+  ) {
     return explicitService === "pppoe" || explicitService === "hotspot"
       ? explicitService
       : null;
@@ -75,8 +81,13 @@ function secureEquals(left: string, right: string) {
 }
 
 async function hashHex(value: string) {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(value),
+  );
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
 }
 
 async function verifyRouterGateway(
@@ -84,7 +95,9 @@ async function verifyRouterGateway(
   request: Request,
   workspaceId: string,
 ) {
-  const match = /^Bearer ([a-f0-9]{64})$/.exec(request.headers.get("Authorization") ?? "");
+  const match = /^Bearer ([a-f0-9]{64})$/.exec(
+    request.headers.get("Authorization") ?? "",
+  );
   if (!match) return null;
   const tokenHash = await hashHex(match[1]);
   return await ctx.runQuery(internal.routerGateway.verifyGatewayCredential, {
@@ -189,12 +202,28 @@ const authenticateSubscriber = httpAction(async (ctx, request) => {
   const body = await readRequestBody(request);
   if (!body)
     return jsonResponse(400, { error: "Request body must be a JSON object" });
-  const nasIdentifier = requiredString(body, "nasIdentifier", 128, "NAS-Identifier");
-  const nasIpAddress = optionalString(body, "nasIpAddress", 64, "NAS-IP-Address");
+  const nasIdentifier = requiredString(
+    body,
+    "nasIdentifier",
+    128,
+    "NAS-Identifier",
+  );
+  const nasIpAddress = optionalString(
+    body,
+    "nasIpAddress",
+    64,
+    "NAS-IP-Address",
+  );
   const username = requiredString(body, "username", 64, "User-Name");
   const password = requiredString(body, "password", 128, "User-Password");
   const connectionType = radiusConnectionType(body);
-  if (!nasIdentifier || nasIpAddress === null || !username || !password || connectionType === null) {
+  if (
+    !nasIdentifier ||
+    nasIpAddress === null ||
+    !username ||
+    !password ||
+    connectionType === null
+  ) {
     return jsonResponse(400, {
       error: "Invalid RADIUS authentication request",
     });
@@ -205,14 +234,19 @@ const authenticateSubscriber = httpAction(async (ctx, request) => {
     ...(nasIpAddress === undefined ? {} : { nasIpAddress }),
   });
   if (!router) return jsonResponse(401, { error: "Unknown RADIUS client" });
-  const result = await ctx.runAction(internal.radius_helpers.authorizeSubscriber, {
-    routerId: router._id,
-    username,
-    password,
-    ...(connectionType === undefined ? {} : { connectionType }),
-  });
+  const result = await ctx.runAction(
+    internal.radius_helpers.authorizeSubscriber,
+    {
+      routerId: router._id,
+      username,
+      password,
+      ...(connectionType === undefined ? {} : { connectionType }),
+    },
+  );
   const requestAttrs = JSON.stringify({
-    service: result.accepted ? result.connectionType : connectionType ?? "unclassified",
+    service: result.accepted
+      ? result.connectionType
+      : (connectionType ?? "unclassified"),
     ...(nasIpAddress === undefined ? {} : { nasIpAddress }),
   });
   if (!result.accepted) {
@@ -264,8 +298,18 @@ const recordAccounting = httpAction(async (ctx, request) => {
   const body = await readRequestBody(request);
   if (!body)
     return jsonResponse(400, { error: "Request body must be a JSON object" });
-  const nasIdentifier = requiredString(body, "nasIdentifier", 128, "NAS-Identifier");
-  const nasIpAddress = optionalString(body, "nasIpAddress", 64, "NAS-IP-Address");
+  const nasIdentifier = requiredString(
+    body,
+    "nasIdentifier",
+    128,
+    "NAS-Identifier",
+  );
+  const nasIpAddress = optionalString(
+    body,
+    "nasIpAddress",
+    64,
+    "NAS-IP-Address",
+  );
   const username = requiredString(body, "username", 64, "User-Name");
   const sessionId = requiredString(body, "sessionId", 256, "Acct-Session-Id");
   const requestedConnectionType = radiusConnectionType(body);
@@ -297,13 +341,45 @@ const recordAccounting = httpAction(async (ctx, request) => {
   const stopTime = validTimestamp(stopTimeValue);
   const sessionTime = optionalNumber(body, "sessionTime", "Acct-Session-Time");
   const inputOctets = optionalNumber(body, "inputOctets", "Acct-Input-Octets");
-  const outputOctets = optionalNumber(body, "outputOctets", "Acct-Output-Octets");
-  const inputGigawords = optionalNumber(body, "inputGigawords", "Acct-Input-Gigawords");
-  const outputGigawords = optionalNumber(body, "outputGigawords", "Acct-Output-Gigawords");
-  const framedIpAddress = optionalString(body, "framedIpAddress", 64, "Framed-IP-Address");
-  const calledStationId = optionalString(body, "calledStationId", 256, "Called-Station-Id");
-  const callingStationId = optionalString(body, "callingStationId", 256, "Calling-Station-Id");
-  const terminateCause = optionalString(body, "terminateCause", 128, "Acct-Terminate-Cause");
+  const outputOctets = optionalNumber(
+    body,
+    "outputOctets",
+    "Acct-Output-Octets",
+  );
+  const inputGigawords = optionalNumber(
+    body,
+    "inputGigawords",
+    "Acct-Input-Gigawords",
+  );
+  const outputGigawords = optionalNumber(
+    body,
+    "outputGigawords",
+    "Acct-Output-Gigawords",
+  );
+  const framedIpAddress = optionalString(
+    body,
+    "framedIpAddress",
+    64,
+    "Framed-IP-Address",
+  );
+  const calledStationId = optionalString(
+    body,
+    "calledStationId",
+    256,
+    "Called-Station-Id",
+  );
+  const callingStationId = optionalString(
+    body,
+    "callingStationId",
+    256,
+    "Calling-Station-Id",
+  );
+  const terminateCause = optionalString(
+    body,
+    "terminateCause",
+    128,
+    "Acct-Terminate-Cause",
+  );
   if (
     startTime === null ||
     stopTime === null ||
@@ -339,13 +415,11 @@ const recordAccounting = httpAction(async (ctx, request) => {
     requestedConnectionType ??
     (subscriber?.connectionType === "hotspot" ? "hotspot" : "pppoe");
   const subscriberId =
-    subscriber?.connectionType === connectionType
-      ? subscriber._id
-      : undefined;
+    subscriber?.connectionType === connectionType ? subscriber._id : undefined;
   const normalizedStartTime =
-    startTime ??
-    new Date(Date.now() - (sessionTime ?? 0) * 1000).toISOString();
-  const status = event === "stop" ? "stopped" : "active";
+    startTime ?? new Date(Date.now() - (sessionTime ?? 0) * 1000).toISOString();
+  const status =
+    event === "stop" ? "stopped" : event === "interim" ? "interim" : "active";
   const accountingAttrs = {
     service: connectionType,
     status: event,
@@ -387,36 +461,92 @@ const recordAccounting = httpAction(async (ctx, request) => {
     responseAttrs: JSON.stringify({ reply_message: "ok" }),
     routerId: router._id,
   });
-  return jsonResponse(
-    200,
-    radiusRestResponse({ "reply:Reply-Message": "ok" }),
-  );
+  return jsonResponse(200, radiusRestResponse({ "reply:Reply-Message": "ok" }));
 });
 
 const claimRouterGatewayOperation = httpAction(async (ctx, request) => {
   const body = await readRequestBody(request);
-  if (!body) return jsonResponse(400, { error: "Request body must be a JSON object" });
+  if (!body)
+    return jsonResponse(400, { error: "Request body must be a JSON object" });
   const workspaceId = requiredString(body, "workspaceId", 128);
-  if (!workspaceId) return jsonResponse(400, { error: "workspaceId is required" });
-  const verifiedWorkspaceId = await verifyRouterGateway(ctx, request, workspaceId);
-  if (!verifiedWorkspaceId) return jsonResponse(401, { error: "Unauthorized router gateway" });
+  if (!workspaceId)
+    return jsonResponse(400, { error: "workspaceId is required" });
+  const verifiedWorkspaceId = await verifyRouterGateway(
+    ctx,
+    request,
+    workspaceId,
+  );
+  if (!verifiedWorkspaceId)
+    return jsonResponse(401, { error: "Unauthorized router gateway" });
 
-  const claimToken = Array.from(crypto.getRandomValues(new Uint8Array(32)), (byte) =>
-    byte.toString(16).padStart(2, "0"),
+  const claimToken = Array.from(
+    crypto.getRandomValues(new Uint8Array(32)),
+    (byte) => byte.toString(16).padStart(2, "0"),
   ).join("");
-  const operation = await ctx.runMutation(internal.routerGateway.claimNextOperation, {
-    workspaceId: verifiedWorkspaceId,
-    claimTokenHash: await hashHex(claimToken),
-  });
+  const operation = await ctx.runMutation(
+    internal.routerGateway.claimNextOperation,
+    {
+      workspaceId: verifiedWorkspaceId,
+      claimTokenHash: await hashHex(claimToken),
+    },
+  );
+  let publicOperation: Record<string, unknown> | null = operation
+    ? { ...operation }
+    : null;
+  if (operation?.operationType === "configure_radius") {
+    if (
+      !env.PPPOE_CREDENTIAL_ENCRYPTION_KEY ||
+      !operation.radiusSecretCiphertext ||
+      !operation.radiusSecretIv
+    ) {
+      await ctx.runMutation(internal.routerGateway.completeOperation, {
+        workspaceId: verifiedWorkspaceId,
+        operationId: operation.operationId,
+        claimTokenHash: await hashHex(claimToken),
+        status: "failed",
+        detail: "RADIUS shared secret decryption is not configured",
+      });
+      return jsonResponse(503, {
+        error: "RADIUS shared secret decryption is not configured",
+      });
+    }
+    try {
+      const radiusSecret = await decryptSubscriberPassword(
+        {
+          ciphertext: operation.radiusSecretCiphertext,
+          iv: operation.radiusSecretIv,
+        },
+        env.PPPOE_CREDENTIAL_ENCRYPTION_KEY,
+      );
+      const {
+        radiusSecretCiphertext: _ciphertext,
+        radiusSecretIv: _iv,
+        ...safeOperation
+      } = operation;
+      publicOperation = { ...safeOperation, radiusSecret };
+    } catch {
+      await ctx.runMutation(internal.routerGateway.completeOperation, {
+        workspaceId: verifiedWorkspaceId,
+        operationId: operation.operationId,
+        claimTokenHash: await hashHex(claimToken),
+        status: "failed",
+        detail: "Could not decrypt the saved RADIUS shared secret",
+      });
+      return jsonResponse(503, {
+        error: "Could not decrypt the saved RADIUS shared secret",
+      });
+    }
+  }
   return jsonResponse(200, {
-    operation,
-    claimToken: operation ? claimToken : null,
+    operation: publicOperation,
+    claimToken: publicOperation ? claimToken : null,
   });
 });
 
 const completeRouterGatewayOperation = httpAction(async (ctx, request) => {
   const body = await readRequestBody(request);
-  if (!body) return jsonResponse(400, { error: "Request body must be a JSON object" });
+  if (!body)
+    return jsonResponse(400, { error: "Request body must be a JSON object" });
   const workspaceId = requiredString(body, "workspaceId", 128);
   const operationId = requiredString(body, "operationId", 128);
   const claimToken = requiredString(body, "claimToken", 64);
@@ -430,20 +560,32 @@ const completeRouterGatewayOperation = httpAction(async (ctx, request) => {
     (status !== "succeeded" && status !== "failed") ||
     detail === null
   ) {
-    return jsonResponse(400, { error: "Invalid router gateway operation result" });
+    return jsonResponse(400, {
+      error: "Invalid router gateway operation result",
+    });
   }
-  const verifiedWorkspaceId = await verifyRouterGateway(ctx, request, workspaceId);
-  if (!verifiedWorkspaceId) return jsonResponse(401, { error: "Unauthorized router gateway" });
+  const verifiedWorkspaceId = await verifyRouterGateway(
+    ctx,
+    request,
+    workspaceId,
+  );
+  if (!verifiedWorkspaceId)
+    return jsonResponse(401, { error: "Unauthorized router gateway" });
 
-  const completed = await ctx.runMutation(internal.routerGateway.completeOperation, {
-    workspaceId: verifiedWorkspaceId,
-    operationId,
-    claimTokenHash: await hashHex(claimToken),
-    status,
-    ...(detail === undefined ? {} : { detail }),
-  });
+  const completed = await ctx.runMutation(
+    internal.routerGateway.completeOperation,
+    {
+      workspaceId: verifiedWorkspaceId,
+      operationId,
+      claimTokenHash: await hashHex(claimToken),
+      status,
+      ...(detail === undefined ? {} : { detail }),
+    },
+  );
   if (!completed) {
-    return jsonResponse(409, { error: "Operation lease is invalid, expired, or unavailable" });
+    return jsonResponse(409, {
+      error: "Operation lease is invalid, expired, or unavailable",
+    });
   }
   return jsonResponse(200, { completed: true });
 });

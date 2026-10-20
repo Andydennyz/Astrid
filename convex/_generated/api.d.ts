@@ -15,6 +15,7 @@ import type * as http from "../http.js";
 import type * as model_accountAlerts from "../model/accountAlerts.js";
 import type * as model_initialInvoice from "../model/initialInvoice.js";
 import type * as model_platformAdmin from "../model/platformAdmin.js";
+import type * as model_routerSessionDisconnect from "../model/routerSessionDisconnect.js";
 import type * as model_subscriberPresence from "../model/subscriberPresence.js";
 import type * as model_workspace from "../model/workspace.js";
 import type * as network from "../network.js";
@@ -58,6 +59,7 @@ declare const fullApi: ApiFromModules<{
   "model/accountAlerts": typeof model_accountAlerts;
   "model/initialInvoice": typeof model_initialInvoice;
   "model/platformAdmin": typeof model_platformAdmin;
+  "model/routerSessionDisconnect": typeof model_routerSessionDisconnect;
   "model/subscriberPresence": typeof model_subscriberPresence;
   "model/workspace": typeof model_workspace;
   network: typeof network;

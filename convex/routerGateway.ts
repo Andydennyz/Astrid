@@ -1,6 +1,7 @@
 import { ConvexError, v } from "convex/values";
 import {
   action,
+  env,
   internalMutation,
   internalQuery,
   mutation,
@@ -10,6 +11,7 @@ import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { requireWorkspaceRole } from "./model/workspace";
 import { isSubscriberServiceAvailable } from "./model/subscriberPresence";
+import { encryptSubscriberPassword } from "./subscriberCredentials";
 
 const managerRoles = ["owner", "admin", "network"] as const;
 const operationStatus = v.union(
@@ -21,6 +23,7 @@ const operationStatus = v.union(
 const operationType = v.union(
   v.literal("verify_management"),
   v.literal("disconnect_ppp_session"),
+  v.literal("configure_radius"),
 );
 const publicOperation = v.object({
   _id: v.id("router_gateway_operations"),
@@ -29,6 +32,9 @@ const publicOperation = v.object({
   setupId: v.id("router_management_setups"),
   operationType,
   targetSessionId: v.optional(v.string()),
+  radiusServerAddress: v.optional(v.string()),
+  routerTunnelAddress: v.optional(v.string()),
+  nasIdentifier: v.optional(v.string()),
   status: operationStatus,
   attemptCount: v.number(),
   createdAt: v.string(),
@@ -47,6 +53,11 @@ const claimedOperation = v.object({
   certificateName: v.string(),
   targetSessionId: v.optional(v.string()),
   targetUsername: v.optional(v.string()),
+  radiusServerAddress: v.optional(v.string()),
+  routerTunnelAddress: v.optional(v.string()),
+  nasIdentifier: v.optional(v.string()),
+  radiusSecretCiphertext: v.optional(v.string()),
+  radiusSecretIv: v.optional(v.string()),
 });
 const leaseDurationMs = 2 * 60 * 1000;
 const maxDisconnectAttempts = 3;
@@ -207,6 +218,9 @@ export const listOperations = query({
         setupId,
         operationType,
         targetSessionId,
+        radiusServerAddress,
+        routerTunnelAddress,
+        nasIdentifier,
         status,
         attemptCount,
         createdAt,
@@ -220,6 +234,9 @@ export const listOperations = query({
         setupId,
         operationType,
         ...(targetSessionId === undefined ? {} : { targetSessionId }),
+        ...(radiusServerAddress === undefined ? {} : { radiusServerAddress }),
+        ...(routerTunnelAddress === undefined ? {} : { routerTunnelAddress }),
+        ...(nasIdentifier === undefined ? {} : { nasIdentifier }),
         status,
         attemptCount,
         createdAt,
@@ -268,11 +285,11 @@ export const enqueueManagementVerification = mutation({
       .withIndex(
         "by_workspace_and_setup_and_operation_type_and_status",
         (index) =>
-        index
-          .eq("workspaceId", args.workspaceId)
-          .eq("setupId", args.setupId)
-          .eq("operationType", "verify_management")
-          .eq("status", "pending"),
+          index
+            .eq("workspaceId", args.workspaceId)
+            .eq("setupId", args.setupId)
+            .eq("operationType", "verify_management")
+            .eq("status", "pending"),
       )
       .first();
     const leased = await ctx.db
@@ -280,11 +297,11 @@ export const enqueueManagementVerification = mutation({
       .withIndex(
         "by_workspace_and_setup_and_operation_type_and_status",
         (index) =>
-        index
-          .eq("workspaceId", args.workspaceId)
-          .eq("setupId", args.setupId)
-          .eq("operationType", "verify_management")
-          .eq("status", "leased"),
+          index
+            .eq("workspaceId", args.workspaceId)
+            .eq("setupId", args.setupId)
+            .eq("operationType", "verify_management")
+            .eq("status", "leased"),
       )
       .first();
     if (existing) return existing._id;
@@ -314,6 +331,226 @@ export const enqueueManagementVerification = mutation({
   },
 });
 
+export const configureRadius = action({
+  args: {
+    workspaceId: v.id("workspaces"),
+    routerId: v.id("routers"),
+    setupId: v.id("router_management_setups"),
+    radiusSecret: v.optional(v.string()),
+  },
+  returns: v.id("router_gateway_operations"),
+  handler: async (ctx, args) => {
+    if (
+      args.radiusSecret !== undefined &&
+      !/^[a-f0-9]{64}$/.test(args.radiusSecret)
+    ) {
+      throw new ConvexError("Enter the 64-character RADIUS shared secret");
+    }
+    const encryptionKey = env.PPPOE_CREDENTIAL_ENCRYPTION_KEY;
+    if (!encryptionKey) {
+      throw new ConvexError(
+        "RADIUS secret storage is not configured; set PPPOE_CREDENTIAL_ENCRYPTION_KEY on the server",
+      );
+    }
+    const secretDetails =
+      args.radiusSecret === undefined
+        ? {}
+        : await (async (radiusSecret: string) => {
+            const digest = await crypto.subtle.digest(
+              "SHA-256",
+              new TextEncoder().encode(radiusSecret),
+            );
+            const encryptedSecret = await encryptSubscriberPassword(
+              radiusSecret,
+              encryptionKey,
+            );
+            return {
+              radiusSecretHash: toHex(new Uint8Array(digest)),
+              radiusSecretCiphertext: encryptedSecret.ciphertext,
+              radiusSecretIv: encryptedSecret.iv,
+            };
+          })(args.radiusSecret);
+    const operationId: Id<"router_gateway_operations"> = await ctx.runMutation(
+      internal.routerGateway.enqueueRadiusConfiguration,
+      {
+        workspaceId: args.workspaceId,
+        routerId: args.routerId,
+        setupId: args.setupId,
+        ...secretDetails,
+      },
+    );
+    return operationId;
+  },
+});
+
+export const enqueueRadiusConfiguration = internalMutation({
+  args: {
+    workspaceId: v.id("workspaces"),
+    routerId: v.id("routers"),
+    setupId: v.id("router_management_setups"),
+    radiusSecretHash: v.optional(v.string()),
+    radiusSecretCiphertext: v.optional(v.string()),
+    radiusSecretIv: v.optional(v.string()),
+  },
+  returns: v.id("router_gateway_operations"),
+  handler: async (ctx, args) => {
+    const { user } = await requireWorkspaceRole(
+      ctx,
+      args.workspaceId,
+      managerRoles,
+    );
+    const [router, setup, gatewayCredential] = await Promise.all([
+      ctx.db.get(args.routerId),
+      ctx.db.get(args.setupId),
+      ctx.db
+        .query("router_gateway_credentials")
+        .withIndex("by_workspace", (index) =>
+          index.eq("workspaceId", args.workspaceId),
+        )
+        .first(),
+    ]);
+    if (!router || router.workspaceId !== args.workspaceId) {
+      throw new ConvexError("Router does not belong to this workspace");
+    }
+    const suppliedSecretFields = [
+      args.radiusSecretHash,
+      args.radiusSecretCiphertext,
+      args.radiusSecretIv,
+    ];
+    if (
+      suppliedSecretFields.some((field) => field !== undefined) &&
+      suppliedSecretFields.some((field) => field === undefined)
+    ) {
+      throw new ConvexError("Encrypted RADIUS secret data is incomplete");
+    }
+    if (
+      args.radiusSecretHash !== undefined &&
+      !/^[a-f0-9]{64}$/.test(args.radiusSecretHash)
+    ) {
+      throw new ConvexError("RADIUS shared secret hash is invalid");
+    }
+    const radiusSecretHash = args.radiusSecretHash ?? router.radiusSecretHash;
+    const radiusSecretCiphertext =
+      args.radiusSecretCiphertext ?? router.radiusSecretCiphertext;
+    const radiusSecretIv = args.radiusSecretIv ?? router.radiusSecretIv;
+    if (!radiusSecretHash || !radiusSecretCiphertext || !radiusSecretIv) {
+      throw new ConvexError(
+        "This router has no saved RADIUS secret. Paste the current FreeRADIUS shared secret to continue.",
+      );
+    }
+    if (
+      !setup ||
+      setup.workspaceId !== args.workspaceId ||
+      setup.routerId !== args.routerId ||
+      setup.status !== "operator_applied"
+    ) {
+      throw new ConvexError(
+        "Verify an applied API-SSL setup before configuring RADIUS",
+      );
+    }
+    if (!gatewayCredential) {
+      throw new ConvexError(
+        "Configure the Ubuntu gateway before applying RADIUS",
+      );
+    }
+    const verifiedSetup = await ctx.db
+      .query("router_gateway_operations")
+      .withIndex(
+        "by_workspace_and_setup_and_operation_type_and_status",
+        (index) =>
+          index
+            .eq("workspaceId", args.workspaceId)
+            .eq("setupId", args.setupId)
+            .eq("operationType", "verify_management")
+            .eq("status", "succeeded"),
+      )
+      .first();
+    if (!verifiedSetup) {
+      throw new ConvexError(
+        "Verify the live API-SSL connection before configuring RADIUS",
+      );
+    }
+    if (!router.tunnelIp) {
+      throw new ConvexError(
+        "Save the router tunnel address before applying RADIUS",
+      );
+    }
+    if (!/^astrid-[a-f0-9]{32}$/.test(router.nasIdentifier)) {
+      throw new ConvexError(
+        "Router does not have a registered Astrid NAS-Identifier",
+      );
+    }
+    const radiusServerAddress = setup.gatewaySourceAddress.split("/")[0];
+    const routerTunnelAddress = router.tunnelIp.split("/")[0];
+    const isIpv4 = (value: string) => {
+      const octets = value.split(".");
+      return (
+        octets.length === 4 &&
+        octets.every(
+          (octet) =>
+            /^\d{1,3}$/.test(octet) &&
+            Number(octet) >= 0 &&
+            Number(octet) <= 255,
+        )
+      );
+    };
+    if (!isIpv4(radiusServerAddress) || !isIpv4(routerTunnelAddress)) {
+      throw new ConvexError("Router and RADIUS server addresses must be IPv4");
+    }
+
+    await ctx.db.patch(router._id, {
+      radiusSecretHash,
+      radiusSecretCiphertext,
+      radiusSecretIv,
+      radiusSecret: undefined,
+    });
+    const byStatus = (status: "pending" | "leased") =>
+      ctx.db
+        .query("router_gateway_operations")
+        .withIndex(
+          "by_workspace_and_setup_and_operation_type_and_status",
+          (index) =>
+            index
+              .eq("workspaceId", args.workspaceId)
+              .eq("setupId", args.setupId)
+              .eq("operationType", "configure_radius")
+              .eq("status", status),
+        )
+        .first();
+    const [pending, leased] = await Promise.all([
+      byStatus("pending"),
+      byStatus("leased"),
+    ]);
+    if (pending) return pending._id;
+    if (leased) return leased._id;
+
+    const now = new Date().toISOString();
+    const operationId = await ctx.db.insert("router_gateway_operations", {
+      workspaceId: args.workspaceId,
+      routerId: args.routerId,
+      setupId: args.setupId,
+      operationType: "configure_radius",
+      radiusServerAddress,
+      routerTunnelAddress,
+      nasIdentifier: router.nasIdentifier,
+      status: "pending",
+      attemptCount: 0,
+      createdBy: user._id,
+      createdAt: now,
+    });
+    await ctx.db.insert("audit_logs", {
+      workspaceId: args.workspaceId,
+      userId: user.tokenIdentifier,
+      action: "enqueue",
+      resource: "router_gateway_operation",
+      resourceId: operationId,
+      details: `Queued RADIUS provisioning for ${router.name}`,
+      createdAt: now,
+    });
+    return operationId;
+  },
+});
+
 export const claimNextOperation = internalMutation({
   args: {
     workspaceId: v.id("workspaces"),
@@ -326,7 +563,8 @@ export const claimNextOperation = internalMutation({
   ): Promise<{
     operationId: Id<"router_gateway_operations">;
     routerId: Id<"routers">;
-    operationType: "verify_management" | "disconnect_ppp_session";
+    operationType:
+      "verify_management" | "disconnect_ppp_session" | "configure_radius";
     managementAddress: string;
     gatewaySourceAddress: string;
     apiPort: 8729;
@@ -334,6 +572,11 @@ export const claimNextOperation = internalMutation({
     certificateName: string;
     targetSessionId?: string;
     targetUsername?: string;
+    radiusServerAddress?: string;
+    routerTunnelAddress?: string;
+    nasIdentifier?: string;
+    radiusSecretCiphertext?: string;
+    radiusSecretIv?: string;
   } | null> => {
     if (!/^[a-f0-9]{64}$/.test(args.claimTokenHash)) {
       throw new ConvexError("Operation lease token hash is invalid");
@@ -396,6 +639,21 @@ export const claimNextOperation = internalMutation({
       });
       return null;
     }
+    if (
+      operation.operationType === "configure_radius" &&
+      (!operation.radiusServerAddress ||
+        !operation.routerTunnelAddress ||
+        !operation.nasIdentifier ||
+        !router.radiusSecretCiphertext ||
+        !router.radiusSecretIv)
+    ) {
+      await ctx.db.patch(operation._id, {
+        status: "failed",
+        completedAt: new Date(now).toISOString(),
+        detail: "RADIUS settings or encrypted shared secret are missing",
+      });
+      return null;
+    }
 
     await ctx.db.patch(operation._id, {
       status: "leased",
@@ -419,6 +677,21 @@ export const claimNextOperation = internalMutation({
       ...(operation.targetUsername === undefined
         ? {}
         : { targetUsername: operation.targetUsername }),
+      ...(operation.radiusServerAddress === undefined
+        ? {}
+        : { radiusServerAddress: operation.radiusServerAddress }),
+      ...(operation.routerTunnelAddress === undefined
+        ? {}
+        : { routerTunnelAddress: operation.routerTunnelAddress }),
+      ...(operation.nasIdentifier === undefined
+        ? {}
+        : { nasIdentifier: operation.nasIdentifier }),
+      ...(operation.operationType !== "configure_radius"
+        ? {}
+        : {
+            radiusSecretCiphertext: router.radiusSecretCiphertext,
+            radiusSecretIv: router.radiusSecretIv,
+          }),
     };
   },
 });

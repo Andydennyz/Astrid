@@ -332,6 +332,242 @@ export const listManagementSetups = query({
   },
 });
 
+const publicManagementWizardProgress = v.object({
+  activeStep: v.number(),
+  gatewayReady: v.boolean(),
+  gatewayConfigSaved: v.boolean(),
+  activeSetupId: v.optional(v.id("router_management_setups")),
+  setupResetAt: v.optional(v.string()),
+  verificationResetAt: v.optional(v.string()),
+  updatedAt: v.string(),
+});
+
+export const getManagementWizardProgress = query({
+  args: {
+    workspaceId: v.id("workspaces"),
+    routerId: v.id("routers"),
+  },
+  returns: v.union(publicManagementWizardProgress, v.null()),
+  handler: async (ctx, args) => {
+    await requireWorkspaceRole(ctx, args.workspaceId, [
+      "owner",
+      "admin",
+      "network",
+    ]);
+    const router = await ctx.db.get(args.routerId);
+    if (!router || router.workspaceId !== args.workspaceId) {
+      throw new ConvexError("Router does not belong to this workspace");
+    }
+    const progress = await ctx.db
+      .query("router_api_ssl_progress")
+      .withIndex("by_workspace_and_router", (index) =>
+        index.eq("workspaceId", args.workspaceId).eq("routerId", args.routerId),
+      )
+      .unique();
+    if (!progress) return null;
+    return {
+      activeStep: progress.activeStep,
+      gatewayReady: progress.gatewayReady,
+      gatewayConfigSaved: progress.gatewayConfigSaved,
+      ...(progress.activeSetupId === undefined
+        ? {}
+        : { activeSetupId: progress.activeSetupId }),
+      ...(progress.setupResetAt === undefined
+        ? {}
+        : { setupResetAt: progress.setupResetAt }),
+      ...(progress.verificationResetAt === undefined
+        ? {}
+        : { verificationResetAt: progress.verificationResetAt }),
+      updatedAt: progress.updatedAt,
+    };
+  },
+});
+
+export const restartManagementWizardStep = mutation({
+  args: {
+    workspaceId: v.id("workspaces"),
+    routerId: v.id("routers"),
+    step: v.number(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await requireWorkspaceRole(ctx, args.workspaceId, [
+      "owner",
+      "admin",
+      "network",
+    ]);
+    const router = await ctx.db.get(args.routerId);
+    if (!router || router.workspaceId !== args.workspaceId) {
+      throw new ConvexError("Router does not belong to this workspace");
+    }
+    if (!Number.isInteger(args.step) || args.step < 0 || args.step > 3) {
+      throw new ConvexError("API-SSL setup step is invalid");
+    }
+
+    const existing = await ctx.db
+      .query("router_api_ssl_progress")
+      .withIndex("by_workspace_and_router", (index) =>
+        index.eq("workspaceId", args.workspaceId).eq("routerId", args.routerId),
+      )
+      .unique();
+    const credential = await ctx.db
+      .query("router_gateway_credentials")
+      .withIndex("by_workspace", (index) =>
+        index.eq("workspaceId", args.workspaceId),
+      )
+      .first();
+    if (args.step > 0 && (!credential || !existing?.gatewayReady)) {
+      throw new ConvexError(
+        "Complete the Ubuntu gateway step before restarting a later step",
+      );
+    }
+
+    const setups = await ctx.db
+      .query("router_management_setups")
+      .withIndex("by_workspace_and_router", (index) =>
+        index.eq("workspaceId", args.workspaceId).eq("routerId", args.routerId),
+      )
+      .take(10);
+    const hasAppliedSetup = setups.some(
+      (setup) =>
+        setup.status === "operator_applied" &&
+        (existing?.setupResetAt ? setup._id === existing.activeSetupId : true),
+    );
+    if (args.step > 1 && !hasAppliedSetup) {
+      throw new ConvexError(
+        "Complete the RouterOS API-SSL step before restarting a later step",
+      );
+    }
+    if (args.step > 2 && !existing?.gatewayConfigSaved) {
+      throw new ConvexError(
+        "Complete the certificate and credentials step before restarting verification",
+      );
+    }
+
+    const now = new Date().toISOString();
+    const progress = {
+      activeStep: args.step,
+      gatewayReady: args.step === 0 ? false : (existing?.gatewayReady ?? false),
+      gatewayConfigSaved:
+        args.step <= 2 ? false : (existing?.gatewayConfigSaved ?? false),
+      ...(args.step <= 1
+        ? { activeSetupId: undefined }
+        : existing?.activeSetupId === undefined
+          ? {}
+          : { activeSetupId: existing.activeSetupId }),
+      ...(args.step <= 1
+        ? { setupResetAt: now }
+        : existing?.setupResetAt === undefined
+          ? {}
+          : { setupResetAt: existing.setupResetAt }),
+      verificationResetAt: now,
+      updatedAt: now,
+    };
+    if (existing) {
+      await ctx.db.patch(existing._id, progress);
+    } else {
+      await ctx.db.insert("router_api_ssl_progress", {
+        workspaceId: args.workspaceId,
+        routerId: args.routerId,
+        ...progress,
+      });
+    }
+    return null;
+  },
+});
+
+export const saveManagementWizardProgress = mutation({
+  args: {
+    workspaceId: v.id("workspaces"),
+    routerId: v.id("routers"),
+    activeStep: v.number(),
+    gatewayReady: v.boolean(),
+    gatewayConfigSaved: v.boolean(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await requireWorkspaceRole(ctx, args.workspaceId, [
+      "owner",
+      "admin",
+      "network",
+    ]);
+    const router = await ctx.db.get(args.routerId);
+    if (!router || router.workspaceId !== args.workspaceId) {
+      throw new ConvexError("Router does not belong to this workspace");
+    }
+    if (
+      !Number.isInteger(args.activeStep) ||
+      args.activeStep < 0 ||
+      args.activeStep > 3
+    ) {
+      throw new ConvexError("API-SSL setup step is invalid");
+    }
+
+    const [gatewayCredential, setups, existing] = await Promise.all([
+      ctx.db
+        .query("router_gateway_credentials")
+        .withIndex("by_workspace", (index) =>
+          index.eq("workspaceId", args.workspaceId),
+        )
+        .first(),
+      ctx.db
+        .query("router_management_setups")
+        .withIndex("by_workspace_and_router", (index) =>
+          index
+            .eq("workspaceId", args.workspaceId)
+            .eq("routerId", args.routerId),
+        )
+        .take(10),
+      ctx.db
+        .query("router_api_ssl_progress")
+        .withIndex("by_workspace_and_router", (index) =>
+          index
+            .eq("workspaceId", args.workspaceId)
+            .eq("routerId", args.routerId),
+        )
+        .unique(),
+    ]);
+    const hasAppliedSetup = setups.some(
+      (setup) =>
+        setup.status === "operator_applied" &&
+        (existing?.setupResetAt ? setup._id === existing.activeSetupId : true),
+    );
+    if ((args.gatewayReady || args.activeStep > 0) && !gatewayCredential) {
+      throw new ConvexError(
+        "Configure the Ubuntu gateway credential before completing this step",
+      );
+    }
+    if ((args.activeStep >= 2 || args.gatewayConfigSaved) && !hasAppliedSetup) {
+      throw new ConvexError(
+        "Mark the RouterOS API-SSL script as applied before continuing",
+      );
+    }
+    if (args.activeStep === 3 && !args.gatewayConfigSaved) {
+      throw new ConvexError(
+        "Save the Ubuntu gateway certificate and router credentials before verifying",
+      );
+    }
+
+    const updatedAt = new Date().toISOString();
+    const progress = {
+      activeStep: args.activeStep,
+      gatewayReady: args.gatewayReady,
+      gatewayConfigSaved: args.gatewayConfigSaved,
+      updatedAt,
+    };
+    if (existing) {
+      await ctx.db.patch(existing._id, progress);
+    } else {
+      await ctx.db.insert("router_api_ssl_progress", {
+        workspaceId: args.workspaceId,
+        routerId: args.routerId,
+        ...progress,
+      });
+    }
+    return null;
+  },
+});
+
 export const recordManagementSetup = mutation({
   args: {
     workspaceId: v.id("workspaces"),
@@ -374,7 +610,7 @@ export const recordManagementSetup = mutation({
       throw new ConvexError("Router setup script fingerprint is invalid");
     }
 
-    return await ctx.db.insert("router_management_setups", {
+    const setupId = await ctx.db.insert("router_management_setups", {
       workspaceId: args.workspaceId,
       routerId: args.routerId,
       managementAddress: args.managementAddress,
@@ -388,6 +624,16 @@ export const recordManagementSetup = mutation({
       createdBy: user._id,
       createdAt: new Date().toISOString(),
     });
+    const progress = await ctx.db
+      .query("router_api_ssl_progress")
+      .withIndex("by_workspace_and_router", (index) =>
+        index.eq("workspaceId", args.workspaceId).eq("routerId", args.routerId),
+      )
+      .unique();
+    if (progress?.setupResetAt) {
+      await ctx.db.patch(progress._id, { activeSetupId: setupId });
+    }
+    return setupId;
   },
 });
 
