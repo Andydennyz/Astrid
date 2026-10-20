@@ -2,7 +2,7 @@
 (
 set -Eeuo pipefail
 
-ASTRID_GATEWAY_REVISION="da7eeba4ade7b09269219fa70e15c7daf1113dae"
+ASTRID_GATEWAY_REVISION="dd394c8d3b6a70da559030fd4a78cfa25cd50460"
 ASTRID_GATEWAY_BASE_URL="https://raw.githubusercontent.com/Andydennyz/Astrid/${ASTRID_GATEWAY_REVISION}/gateway"
 # Update the pinned revision when either gateway source file changes.
 ASTRID_GATEWAY_TMP="$(mktemp -d)"
@@ -85,7 +85,7 @@ from pathlib import Path
 base_url = os.environ["ASTRID_GATEWAY_BASE_URL"]
 destination = Path(os.environ["ASTRID_GATEWAY_TMP"])
 files = {
-    "router_gateway.py": "ee3e132acce8e08b80a9e6870152091c831405727e43eb0af1ce646e5d85bf52",
+    "router_gateway.py": "6fcbcaa777f0aa96c257656de781f1dc9715d2b8458aadb864e0ae44bbd6aa29",
     "astrid-router-gateway.service": "fcd5afbcf476c01b587f1d57a20f87939fc85f04589c6b226b85da16aa4d4beb",
 }
 
@@ -190,7 +190,8 @@ else
   echo "Existing gateway configuration found; keeping its credentials and router entries unchanged."
 fi
 
-run_root systemctl enable --now astrid-router-gateway
+run_root systemctl enable astrid-router-gateway
+run_root systemctl restart astrid-router-gateway
 run_root systemctl is-active --quiet astrid-router-gateway ||
   fail "The gateway service did not start. Check it with: sudo journalctl -u astrid-router-gateway -n 50 --no-pager"
 

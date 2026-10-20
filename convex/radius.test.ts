@@ -128,6 +128,63 @@ async function setupHotspot(t: ReturnType<typeof convexTest>) {
 }
 
 describe("PPPoE RADIUS authorization", () => {
+  it("queues a router disconnect instead of only marking the Convex session stopped", async () => {
+    const t = convexTest(schema, modules);
+    const { owner, workspaceId, routerId, subscriberId } = await setupPppoe(t);
+    const setupId = await owner.mutation(api.routers.recordManagementSetup, {
+      workspaceId,
+      routerId,
+      managementAddress: "10.77.0.2",
+      gatewaySourceAddress: "10.77.0.1",
+      apiUsername: "astrid-api-a1b2c3d4e5f6",
+      certificateName: "astrid-api-ssl",
+      scriptSha256: "a".repeat(64),
+    });
+    await owner.mutation(api.routers.markManagementSetupApplied, {
+      workspaceId,
+      setupId,
+    });
+    await owner.action(api.routerGateway.rotateGatewayCredential, {
+      workspaceId,
+    });
+    const sessionId = await t.run(async (ctx) =>
+      ctx.db.insert("router_sessions", {
+        workspaceId,
+        routerId,
+        subscriberId,
+        username: "subscriber-1",
+        nasIdentifier: "pppoe-nas",
+        sessionId: "admin-disconnect-session",
+        status: "active",
+        startTime: new Date().toISOString(),
+        connectionType: "pppoe",
+        createdAt: new Date().toISOString(),
+      }),
+    );
+
+    const operationId = await owner.mutation(api.sessions.markDisconnected, {
+      workspaceId,
+      sessionId,
+    });
+    if (!operationId) {
+      throw new Error("Expected a queued router disconnect operation");
+    }
+
+    await expect(
+      t.run(async (ctx) => ctx.db.get(operationId)),
+    ).resolves.toMatchObject({
+      setupId,
+      routerId,
+      operationType: "disconnect_ppp_session",
+      targetSessionId: "admin-disconnect-session",
+      targetUsername: "subscriber-1",
+      status: "pending",
+    });
+    await expect(
+      t.run(async (ctx) => ctx.db.get(sessionId)),
+    ).resolves.toMatchObject({ status: "active" });
+  });
+
   it("blocks subscriber activation until its matching package is active", async () => {
     const t = convexTest(schema, modules);
     const { owner, workspaceId, packageId, subscriberId } = await setupPppoe(t);

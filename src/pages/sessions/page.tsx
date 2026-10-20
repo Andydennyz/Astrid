@@ -68,13 +68,27 @@ function SessionsInner() {
     { initialNumItems: 25 },
   );
 
-  const handleDisconnect = async (sessionId: (typeof results)[number]["_id"]) => {
-    if (!workspaceId || !confirm("Mark this session as disconnected?")) return;
+  const handleDisconnect = async (
+    sessionId: (typeof results)[number]["_id"],
+  ) => {
+    if (
+      !workspaceId ||
+      !confirm("Disconnect this PPPoE session on the router?")
+    )
+      return;
     try {
-      await disconnect({ workspaceId, sessionId });
-      toast.success("Session marked as disconnected");
-    } catch {
-      toast.error("Failed to disconnect session");
+      const operationId = await disconnect({ workspaceId, sessionId });
+      toast.success(
+        operationId
+          ? "Router disconnect queued. The session will show stopped after the gateway confirms it."
+          : "This session is already stopped.",
+      );
+    } catch (error) {
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Failed to queue router disconnect",
+      );
     }
   };
 
@@ -162,17 +176,18 @@ function SessionsInner() {
                         {new Date(s.startTime).toLocaleString()}
                       </TableCell>
                       <TableCell>
-                        {s.status !== "stopped" && (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-7 w-7 text-destructive cursor-pointer"
-                            onClick={() => handleDisconnect(s._id)}
-                            title="Mark disconnected"
-                          >
-                            <PowerOff className="w-3.5 h-3.5" />
-                          </Button>
-                        )}
+                        {s.status !== "stopped" &&
+                          s.connectionType === "pppoe" && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-7 w-7 text-destructive cursor-pointer"
+                              onClick={() => handleDisconnect(s._id)}
+                              title="Disconnect on router"
+                            >
+                              <PowerOff className="w-3.5 h-3.5" />
+                            </Button>
+                          )}
                       </TableCell>
                     </TableRow>
                   );

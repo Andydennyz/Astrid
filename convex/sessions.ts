@@ -4,6 +4,7 @@ import { ConvexError } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { requireWorkspaceRole } from "./model/workspace";
+import { queuePppoeSessionDisconnect } from "./model/routerSessionDisconnect";
 
 const sessionStatus = v.union(v.literal("active"), v.literal("stopped"), v.literal("interim"));
 const connectionType = v.union(v.literal("pppoe"), v.literal("hotspot"), v.literal("static"));
@@ -152,7 +153,7 @@ export const getActiveSummary = query({
 
 export const markDisconnected = mutation({
   args: { workspaceId: v.id("workspaces"), sessionId: v.id("router_sessions") },
-  returns: v.null(),
+  returns: v.union(v.id("router_gateway_operations"), v.null()),
   handler: async (ctx, args) => {
     await requireWorkspaceRole(ctx, args.workspaceId, ["owner", "admin", "network"]);
     const session = await ctx.db.get(args.sessionId);
@@ -171,11 +172,21 @@ export const markDisconnected = mutation({
         throw new ConvexError("Session subscriber does not belong to this workspace");
       }
     }
-    await ctx.db.patch(args.sessionId, {
-      status: "stopped",
-      stopTime: new Date().toISOString(),
-      terminateCause: "Admin-Reset",
-    });
-    return null;
+    if (session.connectionType !== "pppoe") {
+      throw new ConvexError(
+        "Router API disconnect is currently supported for PPPoE sessions only",
+      );
+    }
+    const operationId = await queuePppoeSessionDisconnect(
+      ctx,
+      session,
+      "Administrator requested a PPPoE disconnect",
+    );
+    if (!operationId && session.status !== "stopped") {
+      throw new ConvexError(
+        "Could not queue the disconnect. Verify the API-SSL setup and Ubuntu gateway are configured.",
+      );
+    }
+    return operationId;
   },
 });

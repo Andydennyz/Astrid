@@ -47,7 +47,7 @@ type SavedWizardDraft = {
 
 const gatewayInstallCommand = `(
 cat > "$HOME/astrid-gateway-install.sh" <<'ASTRID_GATEWAY_INSTALLER'
-${gatewayInstaller}
+${gatewayInstaller.replace(/\r\n/g, "\n")}
 ASTRID_GATEWAY_INSTALLER
 bash "$HOME/astrid-gateway-install.sh"
 install_status=$?
@@ -57,7 +57,7 @@ exit "$install_status"
 
 const gatewayUninstallCommand = `(
 cat > "$HOME/astrid-gateway-uninstall.sh" <<'ASTRID_GATEWAY_UNINSTALLER'
-${gatewayUninstaller}
+${gatewayUninstaller.replace(/\r\n/g, "\n")}
 ASTRID_GATEWAY_UNINSTALLER
 bash "$HOME/astrid-gateway-uninstall.sh"
 uninstall_status=$?
@@ -678,9 +678,10 @@ export default function RouterManagementSetup({
                 installs the worker and protected service account, then on a
                 first install prompts for the Convex URL and workspace ID shown
                 below and the one-time gateway credential shown above. It writes
-                the protected config, enables the service, and checks that it is
-                running. A rerun preserves an existing gateway config. No
-                project-file copy or manual config-file editing is required.
+                the protected config, restarts the service to load the worker,
+                and checks that it is running. A rerun preserves an existing
+                gateway config. No project-file copy or manual config-file
+                editing is required.
               </AlertDescription>
             </Alert>
             <Textarea

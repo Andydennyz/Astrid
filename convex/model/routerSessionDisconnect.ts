@@ -1,5 +1,117 @@
 import type { Doc } from "../_generated/dataModel";
+import type { Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
+
+async function enqueueSessionDisconnect(
+  ctx: MutationCtx,
+  session: Doc<"router_sessions">,
+  setup: Doc<"router_management_setups">,
+  reason: string,
+  serviceExpiryAt?: string,
+) {
+  const routerId = session.routerId;
+  if (!routerId || session.connectionType !== "pppoe" || !session.sessionId) {
+    return { operationId: null, created: false };
+  }
+
+  const existing = await ctx.db
+    .query("router_gateway_operations")
+    .withIndex("by_ws_router_op_session", (index) =>
+      index
+        .eq("workspaceId", session.workspaceId)
+        .eq("routerId", routerId)
+        .eq("operationType", "disconnect_ppp_session")
+        .eq("targetSessionId", session.sessionId),
+    )
+    .first();
+  if (
+    existing &&
+    (existing.status === "pending" ||
+      existing.status === "leased" ||
+      existing.status === "succeeded")
+  ) {
+    return { operationId: existing._id, created: false };
+  }
+
+  const operationId = await ctx.db.insert("router_gateway_operations", {
+    workspaceId: session.workspaceId,
+    routerId,
+    setupId: setup._id,
+    operationType: "disconnect_ppp_session",
+    connectionType: "pppoe",
+    targetSessionId: session.sessionId,
+    targetUsername: session.username,
+    ...(serviceExpiryAt === undefined ? {} : { serviceExpiryAt }),
+    status: "pending",
+    attemptCount: 0,
+    createdAt: new Date().toISOString(),
+  });
+  await ctx.db.insert("audit_logs", {
+    workspaceId: session.workspaceId,
+    userId: "system:subscriber-access",
+    action: "subscriber_disconnect_queued",
+    resource: "router_session",
+    resourceId: session._id,
+    details: reason,
+    createdAt: new Date().toISOString(),
+  });
+  return { operationId, created: true };
+}
+
+async function findAppliedSetup(
+  ctx: MutationCtx,
+  workspaceId: Id<"workspaces">,
+  routerId: Id<"routers">,
+) {
+  const setups = await ctx.db
+    .query("router_management_setups")
+    .withIndex("by_workspace_and_router", (index) =>
+      index.eq("workspaceId", workspaceId).eq("routerId", routerId),
+    )
+    .order("desc")
+    .take(10);
+  return setups.find((setup) => setup.status === "operator_applied") ?? null;
+}
+
+export async function queuePppoeSessionDisconnect(
+  ctx: MutationCtx,
+  session: Doc<"router_sessions">,
+  reason: string,
+) {
+  if (
+    session.status === "stopped" ||
+    session.connectionType !== "pppoe" ||
+    !session.routerId ||
+    !session.sessionId
+  ) {
+    return null;
+  }
+  const gatewayCredential = await ctx.db
+    .query("router_gateway_credentials")
+    .withIndex("by_workspace", (index) =>
+      index.eq("workspaceId", session.workspaceId),
+    )
+    .first();
+  const setup = await findAppliedSetup(
+    ctx,
+    session.workspaceId,
+    session.routerId,
+  );
+  if (!setup || !gatewayCredential) {
+    await ctx.db.insert("audit_logs", {
+      workspaceId: session.workspaceId,
+      userId: "system:subscriber-access",
+      action: "subscriber_disconnect_unavailable",
+      resource: "router_session",
+      resourceId: session._id,
+      details: `${reason}: API-SSL gateway setup or workspace gateway credential is unavailable`,
+      createdAt: new Date().toISOString(),
+    });
+    return null;
+  }
+  const queued = await enqueueSessionDisconnect(ctx, session, setup, reason);
+  return queued.operationId;
+}
 
 export async function queueSubscriberPppoeDisconnects(
   ctx: MutationCtx,
@@ -44,18 +156,9 @@ export async function queueSubscriberPppoeDisconnects(
   for (const session of sessions) {
     const routerId = session.routerId!;
     if (!setupsByRouter.has(routerId)) {
-      const setups = await ctx.db
-        .query("router_management_setups")
-        .withIndex("by_workspace_and_router", (index) =>
-          index
-            .eq("workspaceId", subscriber.workspaceId)
-            .eq("routerId", routerId),
-        )
-        .order("desc")
-        .take(10);
       setupsByRouter.set(
         routerId,
-        setups.find((setup) => setup.status === "operator_applied") ?? null,
+        await findAppliedSetup(ctx, subscriber.workspaceId, routerId),
       );
     }
 
@@ -76,39 +179,14 @@ export async function queueSubscriberPppoeDisconnects(
       continue;
     }
 
-    const existing = await ctx.db
-      .query("router_gateway_operations")
-      .withIndex("by_ws_router_op_session", (index) =>
-        index
-          .eq("workspaceId", subscriber.workspaceId)
-          .eq("routerId", routerId)
-          .eq("operationType", "disconnect_ppp_session")
-          .eq("targetSessionId", session.sessionId),
-      )
-      .first();
-    if (
-      existing &&
-      (existing.status === "pending" ||
-        existing.status === "leased" ||
-        existing.status === "succeeded")
-    ) {
-      continue;
-    }
-
-    await ctx.db.insert("router_gateway_operations", {
-      workspaceId: subscriber.workspaceId,
-      routerId,
-      setupId: setup._id,
-      operationType: "disconnect_ppp_session",
-      connectionType: "pppoe",
-      targetSessionId: session.sessionId,
-      targetUsername: session.username,
-      ...(serviceExpiryAt === undefined ? {} : { serviceExpiryAt }),
-      status: "pending",
-      attemptCount: 0,
-      createdAt: new Date().toISOString(),
-    });
-    queued += 1;
+    const queuedOperation = await enqueueSessionDisconnect(
+      ctx,
+      session,
+      setup,
+      reason,
+      serviceExpiryAt,
+    );
+    if (queuedOperation.created) queued += 1;
   }
   return queued;
 }

@@ -16,6 +16,32 @@ from router_gateway import (
 
 
 class RouterOsApiEncodingTests(unittest.TestCase):
+    def test_fatal_api_response_identifies_command_without_logging_arguments(self):
+        class FakeConnection:
+            def __init__(self):
+                self.response = io.BytesIO(
+                    encode_sentence(["!fatal", "=message=connection closed"])
+                )
+
+            def sendall(self, _data):
+                return None
+
+            def recv(self, length):
+                return self.response.read(length)
+
+        secret = "sensitive-radius-secret"
+        with self.assertRaisesRegex(
+            RouterOSError,
+            "RouterOS closed the API session while executing command /radius/add",
+        ) as error:
+            router_gateway.run_command(
+                FakeConnection(),
+                "/radius/add",
+                f"=secret={secret}",
+            )
+
+        self.assertNotIn(secret, str(error.exception))
+
     def test_length_encoding_round_trips_all_protocol_ranges(self):
         for length in (0, 0x7F, 0x80, 0x3FFF, 0x4000, 0x1FFFFF, 0x200000, 0x0FFFFFFF, 0x10000000):
             with self.subTest(length=length):
@@ -55,7 +81,19 @@ class RouterOsApiEncodingTests(unittest.TestCase):
             patch("router_gateway.ssl.create_default_context", return_value=tls_context),
             patch(
                 "router_gateway.run_command",
-                side_effect=lambda *_args: [],
+                side_effect=lambda _connection, *words: (
+                    [
+                        {
+                            ".id": "*1",
+                            "comment": "Astrid temporary PPPoE lab test",
+                            "service": "ppp",
+                            "address": "10.77.0.1",
+                            "src-address": "10.77.0.2",
+                        }
+                    ]
+                    if words == ("/radius/print",)
+                    else []
+                ),
             ) as run_command,
         ):
             detail = configure_router_radius(
@@ -71,12 +109,72 @@ class RouterOsApiEncodingTests(unittest.TestCase):
         )
         commands = [call.args[1:] for call in run_command.call_args_list]
         self.assertEqual(commands[0][0], "/login")
-        self.assertEqual(commands[1], ("/radius/print", "?comment=Astrid workspace-wide RADIUS"))
-        self.assertEqual(commands[2][0], "/radius/add")
+        self.assertEqual(commands[1], ("/radius/print",))
+        self.assertEqual(commands[2][0:2], ("/radius/set", "=.id=*1"))
         self.assertIn("=secret=" + "b" * 64, commands[2])
         self.assertIn("=service=ppp", commands[2])
+        self.assertIn("=comment=Astrid workspace-wide RADIUS", commands[2])
+        self.assertFalse(any(command[0] == "/radius/add" for command in commands))
         self.assertIn(("/ppp/aaa/set", "=use-radius=yes", "=accounting=yes", "=interim-update=5m"), commands)
         self.assertFalse(any(command[0] == "/ppp/secret/add" for command in commands))
+
+    def test_radius_configuration_rejects_ambiguous_existing_ppp_entries(self):
+        operation = {
+            "managementAddress": "10.77.0.2",
+            "gatewaySourceAddress": "10.77.0.1",
+            "apiPort": 8729,
+            "apiUsername": "astrid-api-123456789abc",
+            "radiusServerAddress": "10.77.0.1",
+            "routerTunnelAddress": "10.77.0.2",
+            "nasIdentifier": "astrid-" + "a" * 32,
+            "radiusSecret": "b" * 64,
+        }
+        credentials = {
+            "username": "astrid-api-123456789abc",
+            "password": "router-api-password",
+        }
+        raw_socket = unittest.mock.MagicMock()
+        raw_socket.__enter__.return_value = raw_socket
+        raw_socket.__exit__.return_value = False
+        connection = unittest.mock.MagicMock()
+        connection_context = unittest.mock.MagicMock()
+        connection_context.__enter__.return_value = connection
+        connection_context.__exit__.return_value = False
+        tls_context = unittest.mock.MagicMock()
+        tls_context.wrap_socket.return_value = connection_context
+        matching_row = {
+            ".id": "*1",
+            "comment": "Existing PPP entry",
+            "service": "ppp",
+            "address": "10.77.0.1",
+            "src-address": "10.77.0.2",
+        }
+
+        with (
+            patch("router_gateway.socket.create_connection", return_value=raw_socket),
+            patch("router_gateway.ssl.create_default_context", return_value=tls_context),
+            patch(
+                "router_gateway.run_command",
+                side_effect=lambda _connection, *words: (
+                    [matching_row, {**matching_row, ".id": "*2"}]
+                    if words == ("/radius/print",)
+                    else []
+                ),
+            ) as run_command,
+        ):
+            with self.assertRaisesRegex(
+                RouterOSError,
+                "Multiple PPP RADIUS entries match",
+            ):
+                configure_router_radius(
+                    operation,
+                    credentials,
+                    "/etc/astrid/router-ca.pem",
+                    10,
+                )
+
+        commands = [call.args[1:] for call in run_command.call_args_list]
+        self.assertFalse(any(command[0] in ("/radius/set", "/radius/add") for command in commands))
 
     def test_sentence_words_are_utf8_length_prefixed_and_terminated(self):
         encoded = encode_sentence(["/system/identity/print", "=name=Router-é"])

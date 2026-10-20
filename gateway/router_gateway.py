@@ -156,23 +156,38 @@ def verify_api_ssl_configuration(
 
 
 def run_command(connection: ssl.SSLSocket, *words: str) -> list[dict[str, str]]:
-    connection.sendall(encode_sentence(list(words)))
+    command = words[0] if words else "<empty>"
+    try:
+        connection.sendall(encode_sentence(list(words)))
+    except OSError as error:
+        raise RouterOSError(
+            f"RouterOS API connection failed while sending command {command}"
+        ) from error
     rows: list[dict[str, str]] = []
     while True:
-        sentence = read_sentence(connection)
+        try:
+            sentence = read_sentence(connection)
+        except RouterOSError as error:
+            raise RouterOSError(
+                f"{error} while executing command {command}"
+            ) from error
         if not sentence:
             continue
         response_type = sentence[0]
         if response_type == "!re":
             rows.append(parse_attributes(sentence[1:]))
         elif response_type == "!trap":
-            raise RouterOSError("RouterOS rejected the API command")
+            raise RouterOSError(f"RouterOS rejected command {command}")
         elif response_type == "!fatal":
-            raise RouterOSError("RouterOS closed the API session")
+            raise RouterOSError(
+                f"RouterOS closed the API session while executing command {command}"
+            )
         elif response_type in ("!done", "!empty"):
             return rows
         else:
-            raise RouterOSError("RouterOS returned an unsupported API response")
+            raise RouterOSError(
+                f"RouterOS returned an unsupported API response for command {command}"
+            )
 
 
 def probe_router(
@@ -331,13 +346,25 @@ def configure_router_radius(
     with raw_socket:
         with context.wrap_socket(raw_socket, server_hostname=address) as connection:
             run_command(connection, "/login", f"=name={username}", f"=******")
-            radius_rows = run_command(
-                connection,
-                "/radius/print",
-                '?comment=Astrid workspace-wide RADIUS',
-            )
-            if len(radius_rows) > 1:
+            radius_rows = run_command(connection, "/radius/print")
+            astrid_rows = [
+                row
+                for row in radius_rows
+                if row.get("comment") == "Astrid workspace-wide RADIUS"
+            ]
+            if len(astrid_rows) > 1:
                 raise RouterOSError("Multiple Astrid RADIUS entries exist on RouterOS")
+            matching_rows = astrid_rows or [
+                row
+                for row in radius_rows
+                if "ppp" in row.get("service", "").split(",")
+                and row.get("address") == radius_server
+                and row.get("src-address") == router_tunnel
+            ]
+            if len(matching_rows) > 1:
+                raise RouterOSError(
+                    "Multiple PPP RADIUS entries match this router and server; review RouterOS RADIUS settings"
+                )
             settings = [
                 f"=address={radius_server}",
                 f"=src-address={router_tunnel}",
@@ -349,8 +376,8 @@ def configure_router_radius(
                 "=disabled=no",
                 "=comment=Astrid workspace-wide RADIUS",
             ]
-            if radius_rows:
-                item_id = radius_rows[0].get(".id")
+            if matching_rows:
+                item_id = matching_rows[0].get(".id")
                 if not item_id:
                     raise RouterOSError("RouterOS omitted the RADIUS entry identifier")
                 run_command(connection, "/radius/set", f"=.id={item_id}", *settings)

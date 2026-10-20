@@ -3,6 +3,34 @@ Astrid ISP Billing System - Milestone Reference
 
 This file is a working reference for the milestones we have completed, what each milestone covered, and what remains to be built.
 
+CURRENT WORKFLOW - READ THIS BEFORE TROUBLESHOOTING
+
+1. Astrid stores the subscriber, package, status, and encrypted service
+   credentials in Convex. A PPPoE subscriber is not supposed to be copied into
+   RouterOS /ppp secret. RouterOS asks FreeRADIUS to authenticate each new PPPoE
+   login; FreeRADIUS calls Astrid's Convex RADIUS endpoint to check the
+   subscriber. Accounting requests then update the Astrid session and RADIUS
+   logs.
+2. API-SSL is the management channel from the Ubuntu gateway to RouterOS. It is
+   not the subscriber authentication path. The gateway configures RouterOS's
+   RADIUS client and can remove a live PPPoE session when Astrid queues a
+   disconnect operation.
+3. Rejecting a new login and stopping an existing session are separate. A
+   suspend or expiry makes a later RADIUS login fail. RouterOS does not
+   necessarily re-check RADIUS for a session that is already connected, so the
+   Ubuntu gateway must be running the current worker and have the correct local
+   API credentials and trusted CA to remove that session. The resulting stop
+   accounting event should be recorded by FreeRADIUS; the gateway also records
+   completion of its disconnect operation.
+4. "Queued" is not "completed". Check the gateway operation result and Ubuntu
+   service log before assuming RouterOS changed. If a session remains online,
+   verify the worker version, operation status, router API credentials, CA
+   trust, and that the stored RADIUS session ID matches the active RouterOS
+   session. Do not create a local PPP secret as a workaround.
+5. Subscriber deletion is intentionally blocked when billing history (such as
+   an invoice, payment, or support ticket) references the subscriber. Suspend
+   the subscriber to stop service while retaining that history.
+
 
 Milestone 1 - System Design and Foundation
 Status: Completed
@@ -320,13 +348,15 @@ Application work completed so far:
 - Both service scripts are manual-copy artifacts: neither configures WireGuard, interface addressing, DHCP, firewall/NAT, or upstream routing. The HotSpot portal certificate must be trusted by clients; live RouterOS behavior remains unverified.
 - Added activation readiness checks so PPPoE/HotSpot subscribers cannot be activated without encrypted credentials and a matching active package. Static-subscriber behavior is unchanged, and the UI shows backend readiness errors.
 - Added a workspace-scoped Ubuntu gateway credential flow. The gateway receives a one-time token; Convex stores only its SHA-256 hash, and rotation invalidates the previous token.
-- Added a Convex-backed operation handoff for read-only API-SSL connectivity verification. Only manually applied setup records can be queued; operations use expiring claims, expose no RouterOS password, and report success/failure through authenticated HTTP endpoints.
-- Added router UI to configure gateway credentials, queue verification, and view operation status. This is an application protocol only; no Ubuntu worker has been installed or tested.
-- Added a dependency-free Python 3.10+ gateway worker that polls and completes those operations, binds the configured WireGuard source address, and validates RouterOS API-SSL certificates using the system or configured CA bundle.
+- Added a Convex-backed operation handoff for API-SSL verification and router configuration/disconnect operations. Only manually applied setup records can be queued; operations use expiring claims, expose no RouterOS password, and report success/failure through authenticated HTTP endpoints.
+- Added router UI to configure gateway credentials, queue operations, and view operation status. The Ubuntu worker is a separate service; the app does not connect directly to the private router.
+- Added a dependency-free Python 3.10+ gateway worker that polls and completes verify, RADIUS-configuration, and PPPoE-disconnect operations, binds the configured WireGuard source address, and validates RouterOS API-SSL certificates using the system or configured CA bundle.
 - Added worker unit tests, a secret-free example configuration, and a hardened systemd unit template. The worker keeps API passwords in its local config and never sends them to Convex.
 - Local validation passed: 49 Vitest tests, ESLint on changed TypeScript/React files, `npx tsc --noEmit`, and `npm run build`. The build still reports dependency annotation and large-chunk warnings. The 3 Python gateway worker tests passed in the earlier worker implementation.
 Remaining work:
-- Install the gateway worker on the Ubuntu VM with an unprivileged service account and mode-0600 local configuration, then validate tunnel routing, CA trust, and the complete operation lifecycle in the integration round.
+- Update the existing Ubuntu gateway worker in place. The live service log previously reported an unsupported router operation, and the installer in the pushed revision still pinned an older worker. A local installer correction now points at the current gateway revision and explicitly restarts an already-running service; that correction must be published before the Ubuntu installer can fetch it. Re-running the installer preserves the existing protected config; do not uninstall and do not clone the full Astrid application onto Ubuntu.
+- After the worker update, verify tunnel routing, CA trust, API-SSL, RADIUS configuration, and the full disconnect-operation lifecycle. The Convex watcher message "Client disconnected" on the claim endpoint is consistent with a gateway request ending, but alone does not prove whether the request was canceled by a worker restart, timeout, or network interruption; compare it with the Ubuntu service journal.
+- End-to-end RADIUS authentication/accounting has passed for the documented lab test, but new-subscriber provisioning and automated existing-session termination still require a fresh live test after the gateway worker is current.
 - With explicit authorization, configure RouterOS WireGuard peer/address setup and required interface addressing, DHCP, firewall/NAT, and upstream routing; then apply and verify the generated RADIUS, PPPoE, and HotSpot configurations on the isolated lab devices.
 - Rehearse backup restoration in the isolated integration environment; no snapshot or restore was run during application development.
 Backup and rollback runbook:
@@ -337,7 +367,7 @@ Backup and rollback runbook:
 - Before restoring data, rehearse the snapshot in an isolated preview and verify representative workspace, subscriber, package, invoice, router, session, and audit records. Never restore a production snapshot directly over production as a routine rollback.
 - For a live data incident, preserve the current state, estimate data loss since the snapshot, and obtain explicit approval before restoring; record the restore point and post-restore checks.
 - The gateway operation API uses `POST /api/router-gateway/operations/claim` with a workspace ID and bearer token, then `POST /api/router-gateway/operations/complete` with the operation ID, lease token, and result. Lease tokens are short-lived; operation completion must not include credentials or other secrets.
-- The gateway worker files are under `gateway/`. `config.example.json` contains placeholders only; never put live gateway/API credentials in the repository. The systemd unit is a template and was not installed on the VM.
+- The gateway worker source and installer are under `gateway/`; the app's setup screen embeds the installer command. `config.example.json` contains placeholders only; never put live gateway/API credentials in the repository. The Ubuntu systemd service is already installed and active, but its worker revision must be updated in place and verified.
 Expected outcome:
 - A full, working ISP billing and provisioning system in the lab.
 
