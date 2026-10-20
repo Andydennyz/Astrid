@@ -131,12 +131,20 @@ run_root systemctl daemon-reload
 
 CONFIG_PATH="/etc/astrid-router-gateway/config.json"
 if [ ! -f "$CONFIG_PATH" ]; then
+  if [ ! -r /dev/tty ]; then
+    fail "No interactive terminal is available for the first-time prompts. Download this installer to a file, then run it with bash from your Ubuntu terminal."
+  fi
+  exec 3</dev/tty
   echo
   echo "Enter the connection details shown in Astrid Step 1."
-  read -r -p "Convex site URL: " CONVEX_SITE_URL
-  read -r -p "Workspace ID: " WORKSPACE_ID
-  read -r -s -p "One-time gateway credential (input hidden): " GATEWAY_TOKEN
+  read -r -u 3 -p "Convex site URL: " CONVEX_SITE_URL ||
+    fail "Could not read the Convex site URL from the terminal."
+  read -r -u 3 -p "Workspace ID: " WORKSPACE_ID ||
+    fail "Could not read the workspace ID from the terminal."
+  read -r -s -u 3 -p "One-time gateway credential (input hidden): " GATEWAY_TOKEN ||
+    fail "Could not read the gateway credential from the terminal."
   echo
+  exec 3<&-
     CONFIG_OUTPUT_PATH="${ASTRID_GATEWAY_TMP}/config.json"
     export CONVEX_SITE_URL WORKSPACE_ID GATEWAY_TOKEN CONFIG_OUTPUT_PATH
 
