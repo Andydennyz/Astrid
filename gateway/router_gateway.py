@@ -374,25 +374,31 @@ def configure_router_radius(
     with raw_socket:
         with context.wrap_socket(raw_socket, server_hostname=address) as connection:
             run_command(connection, "/login", f"=name={username}", f"=******")
-            radius_rows = run_command(
+            astrid_rows = run_command(
                 connection,
                 "/radius/print",
                 "=.proplist=.id,comment,service,address,src-address",
+                "?comment=Astrid workspace-wide RADIUS",
             )
-            astrid_rows = [
-                row
-                for row in radius_rows
-                if row.get("comment") == "Astrid workspace-wide RADIUS"
-            ]
             if len(astrid_rows) > 1:
                 raise RouterOSError("Multiple Astrid RADIUS entries exist on RouterOS")
-            matching_rows = astrid_rows or [
-                row
-                for row in radius_rows
-                if "ppp" in row.get("service", "").split(",")
-                and row.get("address") == radius_server
-                and row.get("src-address") == router_tunnel
-            ]
+            matching_rows = astrid_rows
+            if not matching_rows:
+                matching_rows = run_command(
+                    connection,
+                    "/radius/print",
+                    "=.proplist=.id,comment,service,address,src-address",
+                    f"?address={radius_server}",
+                    f"?src-address={router_tunnel}",
+                    "?service=ppp",
+                )
+                matching_rows = [
+                    row
+                    for row in matching_rows
+                    if "ppp" in row.get("service", "").split(",")
+                    and row.get("address") == radius_server
+                    and row.get("src-address") == router_tunnel
+                ]
             if len(matching_rows) > 1:
                 raise RouterOSError(
                     "Multiple PPP RADIUS entries match this router and server; review RouterOS RADIUS settings"

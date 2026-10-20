@@ -105,6 +105,14 @@ class RouterOsApiEncodingTests(unittest.TestCase):
             patch(
                 "router_gateway.run_command",
                 side_effect=lambda _connection, *words: (
+                    []
+                    if words
+                    == (
+                        "/radius/print",
+                        "=.proplist=.id,comment,service,address,src-address",
+                        "?comment=Astrid workspace-wide RADIUS",
+                    )
+                    else
                     [
                         {
                             ".id": "*1",
@@ -118,8 +126,12 @@ class RouterOsApiEncodingTests(unittest.TestCase):
                     == (
                         "/radius/print",
                         "=.proplist=.id,comment,service,address,src-address",
+                        "?address=10.77.0.1",
+                        "?src-address=10.77.0.2",
+                        "?service=ppp",
                     )
-                    else []
+                    else
+                    []
                 ),
             ) as run_command,
         ):
@@ -141,12 +153,23 @@ class RouterOsApiEncodingTests(unittest.TestCase):
             (
                 "/radius/print",
                 "=.proplist=.id,comment,service,address,src-address",
+                "?comment=Astrid workspace-wide RADIUS",
             ),
         )
-        self.assertEqual(commands[2][0:2], ("/radius/set", "=.id=*1"))
-        self.assertIn("=secret=" + "b" * 64, commands[2])
-        self.assertIn("=service=ppp", commands[2])
-        self.assertIn("=comment=Astrid workspace-wide RADIUS", commands[2])
+        self.assertEqual(
+            commands[2],
+            (
+                "/radius/print",
+                "=.proplist=.id,comment,service,address,src-address",
+                "?address=10.77.0.1",
+                "?src-address=10.77.0.2",
+                "?service=ppp",
+            ),
+        )
+        self.assertEqual(commands[3][0:2], ("/radius/set", "=.id=*1"))
+        self.assertIn("=secret=" + "b" * 64, commands[3])
+        self.assertIn("=service=ppp", commands[3])
+        self.assertIn("=comment=Astrid workspace-wide RADIUS", commands[3])
         self.assertFalse(any(command[0] == "/radius/add" for command in commands))
         self.assertIn(("/ppp/aaa/set", "=use-radius=yes", "=accounting=yes", "=interim-update=5m"), commands)
         self.assertFalse(any(command[0] == "/ppp/secret/add" for command in commands))
@@ -189,11 +212,21 @@ class RouterOsApiEncodingTests(unittest.TestCase):
             patch(
                 "router_gateway.run_command",
                 side_effect=lambda _connection, *words: (
-                    [matching_row, {**matching_row, ".id": "*2"}]
+                    []
                     if words
                     == (
                         "/radius/print",
                         "=.proplist=.id,comment,service,address,src-address",
+                        "?comment=Astrid workspace-wide RADIUS",
+                    )
+                    else [matching_row, {**matching_row, ".id": "*2"}]
+                    if words
+                    == (
+                        "/radius/print",
+                        "=.proplist=.id,comment,service,address,src-address",
+                        "?address=10.77.0.1",
+                        "?src-address=10.77.0.2",
+                        "?service=ppp",
                     )
                     else []
                 ),
