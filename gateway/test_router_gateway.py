@@ -91,7 +91,11 @@ class RouterOsApiEncodingTests(unittest.TestCase):
                             "src-address": "10.77.0.2",
                         }
                     ]
-                    if words == ("/radius/print",)
+                    if words
+                    == (
+                        "/radius/print",
+                        "=.proplist=.id,comment,service,address,src-address",
+                    )
                     else []
                 ),
             ) as run_command,
@@ -109,7 +113,13 @@ class RouterOsApiEncodingTests(unittest.TestCase):
         )
         commands = [call.args[1:] for call in run_command.call_args_list]
         self.assertEqual(commands[0][0], "/login")
-        self.assertEqual(commands[1], ("/radius/print",))
+        self.assertEqual(
+            commands[1],
+            (
+                "/radius/print",
+                "=.proplist=.id,comment,service,address,src-address",
+            ),
+        )
         self.assertEqual(commands[2][0:2], ("/radius/set", "=.id=*1"))
         self.assertIn("=secret=" + "b" * 64, commands[2])
         self.assertIn("=service=ppp", commands[2])
@@ -157,7 +167,11 @@ class RouterOsApiEncodingTests(unittest.TestCase):
                 "router_gateway.run_command",
                 side_effect=lambda _connection, *words: (
                     [matching_row, {**matching_row, ".id": "*2"}]
-                    if words == ("/radius/print",)
+                    if words
+                    == (
+                        "/radius/print",
+                        "=.proplist=.id,comment,service,address,src-address",
+                    )
                     else []
                 ),
             ) as run_command,

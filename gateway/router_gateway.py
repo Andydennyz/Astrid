@@ -346,7 +346,11 @@ def configure_router_radius(
     with raw_socket:
         with context.wrap_socket(raw_socket, server_hostname=address) as connection:
             run_command(connection, "/login", f"=name={username}", f"=******")
-            radius_rows = run_command(connection, "/radius/print")
+            radius_rows = run_command(
+                connection,
+                "/radius/print",
+                "=.proplist=.id,comment,service,address,src-address",
+            )
             astrid_rows = [
                 row
                 for row in radius_rows
